@@ -10,8 +10,6 @@ import os
 import subprocess
 import sys
 
-from editor.edit import edit
-
 REMOTE = "gdrive:"
 OUT_DIR = "Prontos"
 MAX_PER_RUN = int(os.getenv("MAX_PER_RUN", "3"))
@@ -55,6 +53,8 @@ def main():
             with open(gh, "a") as f:
                 f.write(f"pending={'true' if todo else 'false'}\n")
         return
+
+    from editor.edit import edit  # só aqui: no --check as libs ainda não foram instaladas
 
     os.makedirs("work", exist_ok=True)
     report = ["# Shorts editados\n"]
