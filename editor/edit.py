@@ -175,13 +175,36 @@ Regras:
   Sincronize com o que está sendo falado naquele instante.
 - q: 2 a 4 palavras EM INGLÊS descrevendo uma cena concreta filmável de banco de vídeo (ex: "factory worker assembly line",
   "family road trip car", "counting dollar bills", "brazil favela aerial"). Nada de nomes de pessoas ou marcas. Varie as cenas."""
-    r = requests.post("https://models.github.ai/inference/chat/completions",
-                      headers={"Authorization": f"Bearer {GH_TOKEN}", "Content-Type": "application/json"},
-                      json={"model": LLM_MODEL, "temperature": 0.4,
-                            "response_format": {"type": "json_object"},
-                            "messages": [{"role": "user", "content": prompt}]}, timeout=120)
-    r.raise_for_status()
-    plan = json.loads(r.json()["choices"][0]["message"]["content"])
+    plan, last_err = None, None
+    for model in (LLM_MODEL, "openai/gpt-4o-mini", "openai/gpt-4.1"):
+        for use_fmt in (True, False):
+            body = {"model": model, "temperature": 0.4,
+                    "messages": [{"role": "system", "content": "Responda apenas com JSON válido."},
+                                 {"role": "user", "content": prompt}]}
+            if use_fmt:
+                body["response_format"] = {"type": "json_object"}
+            try:
+                r = requests.post("https://models.github.ai/inference/chat/completions",
+                                  headers={"Authorization": f"Bearer {GH_TOKEN}", "Content-Type": "application/json",
+                                           "Accept": "application/json"},
+                                  json=body, timeout=120)
+                txt = r.text
+                if r.status_code != 200:
+                    raise RuntimeError(f"HTTP {r.status_code}: {txt[:300]}")
+                content = r.json()["choices"][0]["message"]["content"] or ""
+                m = re.search(r"\{.*\}", content, re.S)
+                if not m:
+                    raise RuntimeError(f"sem JSON: {content[:300]}")
+                plan = json.loads(m.group(0))
+                print(f"IA ok ({model})", flush=True)
+                break
+            except Exception as ex:
+                last_err = ex
+                print(f"  IA {model} fmt={use_fmt}: {ex}", flush=True)
+        if plan:
+            break
+    if not plan:
+        raise RuntimeError(last_err)
     cuts = sorted(({"t": float(c["t"]), "q": str(c["q"])} for c in plan["cuts"]), key=lambda c: c["t"])
     title = [str(x).upper() for x in plan.get("title", [])][:2]
     return title, cuts
