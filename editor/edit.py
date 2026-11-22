@@ -36,7 +36,7 @@ PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 GH_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 # vários modelos: se um estiver ocupado/sem cota, tenta o próximo (os "lite" têm cota grátis maior)
-GEMINI_MODELS = (os.getenv("GEMINI_MODELS") or "gemini-3.8-flash,gemini-3.8-flash-lite,gemini-flash-lite-latest,gemini-flash-latest").split(",")
+GEMINI_MODELS = (os.getenv("GEMINI_MODELS") or "gemini-3.8-flash,gemini-flash-lite-latest,gemini-flash-latest").split(",")
 _GEMINI_OK = []
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4.1-mini")
 FONT = os.getenv("CAPTION_FONT", "Montserrat ExtraBold")
@@ -247,8 +247,8 @@ def ask_gemini(model, prompt):
         if r.status_code == 400 and "thinking" in r.text.lower():
             gen.pop("thinkingConfig", None)
             continue
-        if r.status_code not in (429, 500, 503) or wait == 90:
-            break
+        if r.status_code not in (429, 500, 503) or wait == 90 or "quota" in r.text.lower():
+            break  # sem cota não adianta esperar: vai pro próximo modelo
     if r is None:
         raise RuntimeError("timeout")
     if r.status_code != 200:
