@@ -179,7 +179,7 @@ Regras:
     plan, last_err = None, None
     attempts = []
     if GEMINI_KEY:
-        attempts += [("gemini", m) for m in ("gemini-3.8-flash", "gemini-flash-latest", "gemini-3.8-flash", "gemini-flash-latest")]
+        attempts += [("gemini", m) for m in ("gemini-3.8-flash", "gemini-flash-latest")]
     if GH_TOKEN:
         attempts += [("github", m) for m in (LLM_MODEL, "openai/gpt-4o-mini")]
     for provider, model in attempts:
@@ -203,18 +203,31 @@ Regras:
 
 def ask_gemini(model, prompt):
     import time
-    for wait in (0, 10, 30):  # 503 = Gemini ocupado: espera e tenta de novo
+    gen = {"temperature": 0.4, "responseMimeType": "application/json",
+           "thinkingConfig": {"thinkingLevel": "low"}}  # sem "pensar" muito: resposta rápida
+    r = None
+    for wait in (0, 10, 30):  # 503/timeout = Gemini ocupado: espera e tenta de novo
         time.sleep(wait)
-        r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                          params={"key": GEMINI_KEY},
-                          json={"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                                "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json"}},
-                          timeout=120)
+        try:
+            r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                              params={"key": GEMINI_KEY},
+                              json={"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                                    "generationConfig": gen},
+                              timeout=300)
+        except requests.exceptions.Timeout:
+            print(f"  Gemini {model}: demorou demais, tentando de novo", flush=True)
+            continue
+        if r.status_code == 400 and "thinking" in r.text.lower():
+            gen.pop("thinkingConfig", None)
+            continue
         if r.status_code not in (429, 500, 503):
             break
+    if r is None:
+        raise RuntimeError("timeout")
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    parts = r.json()["candidates"][0]["content"]["parts"]
+    return "".join(p.get("text", "") for p in parts if not p.get("thought"))
 
 
 def ask_github(model, prompt):
