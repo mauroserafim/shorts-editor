@@ -20,6 +20,7 @@ env:
   RCLONE_CONFIG_GDRIVE_ROOT_FOLDER_ID: ${{ vars.DRIVE_FOLDER_ID || '1p7t0C2w6xKwEXuP6XcB8HMo69PS6-jO4' }}
   PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   WHISPER_MODEL: ${{ vars.WHISPER_MODEL || 'medium' }}
   CAPTION_FONT: Montserrat ExtraBold
 

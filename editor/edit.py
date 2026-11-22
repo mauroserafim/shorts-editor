@@ -34,6 +34,7 @@ BOT_H = H - TOP_H
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 GH_TOKEN = os.getenv("GITHUB_TOKEN", "")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4.1-mini")
 FONT = os.getenv("CAPTION_FONT", "Montserrat ExtraBold")
 FONTS_DIR = os.getenv("FONTS_DIR", "")
@@ -176,57 +177,50 @@ Regras:
 - q: 2 a 4 palavras EM INGLÊS descrevendo uma cena concreta filmável de banco de vídeo (ex: "factory worker assembly line",
   "family road trip car", "counting dollar bills", "brazil favela aerial"). Nada de nomes de pessoas ou marcas. Varie as cenas."""
     plan, last_err = None, None
-    for model in (LLM_MODEL, "openai/gpt-4o-mini", "openai/gpt-4.1"):
-        for use_fmt in (True, False):
-            body = {"model": model, "temperature": 0.4,
-                    "messages": [{"role": "system", "content": "Responda apenas com JSON válido."},
-                                 {"role": "user", "content": prompt}]}
-            if use_fmt:
-                body["response_format"] = {"type": "json_object"}
-            try:
-                # curl igual à documentação do GitHub Models (requests recebia "OK" em vez da resposta)
-                cp = subprocess.run(["curl", "-sS", "-L", "-X", "POST", "-w", "\n__HTTP__%{http_code}",
-                                     "https://models.github.ai/inference/chat/completions",
-                                     "-H", "Accept: application/vnd.github+json",
-                                     "-H", f"Authorization: Bearer {GH_TOKEN}",
-                                     "-H", "X-GitHub-Api-Version: 2022-11-28",
-                                     "-H", "Content-Type: application/json",
-                                     "--data-binary", "@-"],
-                                    input=json.dumps(body), capture_output=True, text=True, timeout=180)
-                out_txt, _, code = cp.stdout.rpartition("\n__HTTP__")
-
-                class _R:  # mesmo formato que o resto do código espera
-                    status_code = int(code or 0)
-                    text = out_txt
-                    headers = {"content-type": "curl"}
-                    def json(self):
-                        return json.loads(out_txt)
-                r = _R()
-                if cp.returncode != 0:
-                    raise RuntimeError(f"curl: {cp.stderr[:300]}")
-                txt = r.text
-                if r.status_code != 200:
-                    raise RuntimeError(f"HTTP {r.status_code}: {txt[:300]}")
-                try:
-                    content = r.json()["choices"][0]["message"]["content"] or ""
-                except Exception:
-                    raise RuntimeError(f"resposta não-JSON ({r.headers.get('content-type')}): {txt[:400]!r}")
-                m = re.search(r"\{.*\}", content, re.S)
-                if not m:
-                    raise RuntimeError(f"sem JSON: {content[:300]}")
-                plan = json.loads(m.group(0))
-                print(f"IA ok ({model})", flush=True)
-                break
-            except Exception as ex:
-                last_err = ex
-                print(f"  IA {model} fmt={use_fmt}: {ex}", flush=True)
-        if plan:
+    attempts = []
+    if GEMINI_KEY:
+        attempts += [("gemini", m) for m in ("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash")]
+    if GH_TOKEN:
+        attempts += [("github", m) for m in (LLM_MODEL, "openai/gpt-4o-mini")]
+    for provider, model in attempts:
+        try:
+            content = ask_gemini(model, prompt) if provider == "gemini" else ask_github(model, prompt)
+            m = re.search(r"\{.*\}", content, re.S)
+            if not m:
+                raise RuntimeError(f"sem JSON: {content[:300]!r}")
+            plan = json.loads(m.group(0))
+            print(f"IA ok ({provider} {model})", flush=True)
             break
+        except Exception as ex:
+            last_err = ex
+            print(f"  IA {provider} {model}: {ex}", flush=True)
     if not plan:
-        raise RuntimeError(last_err)
+        raise RuntimeError(last_err or "nenhuma IA configurada")
     cuts = sorted(({"t": float(c["t"]), "q": str(c["q"])} for c in plan["cuts"]), key=lambda c: c["t"])
     title = [str(x).upper() for x in plan.get("title", [])][:2]
     return title, cuts
+
+
+def ask_gemini(model, prompt):
+    r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                      params={"key": GEMINI_KEY},
+                      json={"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                            "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json"}},
+                      timeout=120)
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def ask_github(model, prompt):
+    r = requests.post("https://models.github.ai/inference/chat/completions",
+                      headers={"Authorization": f"Bearer {GH_TOKEN}", "Content-Type": "application/json",
+                               "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
+                      json={"model": model, "temperature": 0.4,
+                            "messages": [{"role": "user", "content": prompt}]}, timeout=120)
+    if r.status_code != 200 or "json" not in r.headers.get("content-type", ""):
+        raise RuntimeError(f"HTTP {r.status_code} {r.headers.get('content-type')}: {r.text[:200]!r}")
+    return r.json()["choices"][0]["message"]["content"] or ""
 
 
 STOP = set("""a o as os um uma de da do das dos em no na nos nas num numa por pra para pro com que se e é ou
@@ -440,7 +434,7 @@ def edit(src, out, words_json=None, fake_broll=False):
 
         # plano: título + b-rolls
         title, cuts, plan_src = None, None, "ia"
-        if GH_TOKEN:
+        if GEMINI_KEY or GH_TOKEN:
             try:
                 title, cuts = llm_plan(out_words, total)
             except Exception as ex:
