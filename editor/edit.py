@@ -372,7 +372,16 @@ def edit(src, out, words_json=None, fake_broll=False):
     try:
         duration = probe_duration(src)
         norm = os.path.join(tmp, "norm.mp4")
-        run(["ffmpeg", "-y", "-i", src, "-vf", f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps={FPS},setsar=1",
+        # celular grava em HDR (HLG/PQ): converte pra SDR com tonemap, senão fica escuro/lavado
+        trc = run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_transfer",
+                   "-of", "default=nk=1:nw=1", src]).strip()
+        tm = ""
+        if trc in ("smpte2084", "arib-std-b67"):
+            print(f"Vídeo HDR ({trc}): convertendo cores para SDR", flush=True)
+            tm = ("zscale=t=linear:npl=203,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=mobius:param=0.3:desat=0,"
+                  "zscale=t=bt709:m=bt709:r=tv,format=yuv420p,")
+        run(["ffmpeg", "-y", "-i", src, "-vf", f"{tm}scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},fps={FPS},setsar=1",
+             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p",
              "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k", norm])
 
@@ -447,6 +456,7 @@ def edit(src, out, words_json=None, fake_broll=False):
         run(["ffmpeg", "-y", "-i", bottom, "-i", top, "-filter_complex",
              f"[1:v]tpad=stop_mode=clone:stop_duration=5[t];[t][0:v]vstack=inputs=2:shortest=1,{sub},format=yuv420p[v]",
              "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-r", str(FPS),
+             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
              "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])
 
         return {"duracao_original": round(duration, 1), "duracao_final": round(total, 1),
