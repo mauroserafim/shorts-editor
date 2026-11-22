@@ -12,7 +12,7 @@ import sys
 
 REMOTE = "gdrive:"
 OUT_DIR = "Prontos"
-MAX_PER_RUN = int(os.getenv("MAX_PER_RUN", "3"))
+MAX_PER_RUN = int(os.getenv("MAX_PER_RUN", "6"))
 VIDEO_EXT = (".mp4", ".mov", ".m4v", ".mkv", ".webm", ".3gp")
 
 

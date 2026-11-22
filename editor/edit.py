@@ -139,13 +139,13 @@ def crop_for(faces, s, e, src_w, src_h):
         fs = statistics.median(p[3] for p in pts)
     else:
         cx, cy, fs = src_w / 2, src_h * 0.55, src_w * 0.35
-    cw = min(src_w, max(src_w * 0.55, fs / 0.68))   # rosto ~68% da largura
+    cw = min(src_w, max(src_w * 0.6, fs / 0.58))   # rosto ~58% da largura (mostra a cabeça inteira)
     ch = cw * BOT_H / W
     if ch > src_h:
         ch = src_h
         cw = ch * W / BOT_H
     x = min(max(0, cx - cw / 2), src_w - cw)
-    y = min(max(0, cy - ch * 0.42), src_h - ch)
+    y = min(max(0, cy - ch * 0.36), src_h - ch)
     ev = lambda v: int(v) // 2 * 2
     return ev(cw), ev(ch), ev(x), ev(y)
 
@@ -349,10 +349,10 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,{FONT},92,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,1,0,1,7,2,5,30,30,0,1
+Style: Cap,{FONT},104,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,1,0,1,7,2,5,30,30,0,1
 Style: Title,{FONT},84,&H00000000,&H00000000,&H00000000,&H00000000,-1,0,0,0,100,100,1,0,1,0,0,5,20,20,0,1
 Style: Box,{FONT},20,&H0000CCFF,&H0000CCFF,&H0000CCFF,&H0000CCFF,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
-Style: Cred,{FONT},32,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,28,1
+Style: Cred,{FONT},42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,28,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
