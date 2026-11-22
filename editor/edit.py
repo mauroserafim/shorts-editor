@@ -191,7 +191,10 @@ Regras:
                 txt = r.text
                 if r.status_code != 200:
                     raise RuntimeError(f"HTTP {r.status_code}: {txt[:300]}")
-                content = r.json()["choices"][0]["message"]["content"] or ""
+                try:
+                    content = r.json()["choices"][0]["message"]["content"] or ""
+                except Exception:
+                    raise RuntimeError(f"resposta não-JSON ({r.headers.get('content-type')}): {txt[:400]!r}")
                 m = re.search(r"\{.*\}", content, re.S)
                 if not m:
                     raise RuntimeError(f"sem JSON: {content[:300]}")
