@@ -21,6 +21,7 @@ env:
   PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+  GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
   WHISPER_MODEL: ${{ vars.WHISPER_MODEL || 'medium' }}
   CAPTION_FONT: Montserrat ExtraBold
 

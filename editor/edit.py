@@ -35,6 +35,9 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")
 PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
 GH_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+# vários modelos: se um estiver ocupado/sem cota, tenta o próximo (os "lite" têm cota grátis maior)
+GEMINI_MODELS = (os.getenv("GEMINI_MODELS") or "gemini-3.8-flash,gemini-3.8-flash-lite,gemini-flash-lite-latest,gemini-flash-latest").split(",")
+_GEMINI_OK = []
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4.1-mini")
 FONT = os.getenv("CAPTION_FONT", "Montserrat ExtraBold")
 FONTS_DIR = os.getenv("FONTS_DIR", "")
@@ -185,7 +188,7 @@ Regras:
     plan, last_err = None, None
     attempts = []
     if GEMINI_KEY:
-        attempts += [("gemini", m) for m in ("gemini-3.8-flash", "gemini-flash-latest")]
+        attempts += [("gemini", m) for m in GEMINI_MODELS]
     if GH_TOKEN:
         attempts += [("github", m) for m in (LLM_MODEL, "openai/gpt-4o-mini")]
     for provider, model in attempts:
@@ -196,6 +199,8 @@ Regras:
                 raise RuntimeError(f"sem JSON: {content[:300]!r}")
             plan = json.loads(m.group(0))
             print(f"IA ok ({provider} {model})", flush=True)
+            if provider == "gemini":
+                _GEMINI_OK.insert(0, model)
             break
         except Exception as ex:
             last_err = ex
@@ -218,7 +223,7 @@ def ask_gemini(model, prompt):
     gen = {"temperature": 0.4, "responseMimeType": "application/json",
            "thinkingConfig": {"thinkingLevel": "low"}}  # sem "pensar" muito: resposta rápida
     r = None
-    for wait in (0, 10, 30):  # 503/timeout = Gemini ocupado: espera e tenta de novo
+    for wait in (0, 30, 90):  # 503/429/timeout = Gemini ocupado: espera e tenta de novo
         time.sleep(wait)
         try:
             r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
@@ -233,7 +238,7 @@ def ask_gemini(model, prompt):
         if r.status_code == 400 and "thinking" in r.text.lower():
             gen.pop("thinkingConfig", None)
             continue
-        if r.status_code not in (429, 500, 503):
+        if r.status_code not in (429, 500, 503) or wait == 90:
             break
     if r is None:
         raise RuntimeError("timeout")
@@ -311,7 +316,7 @@ def pexels_search(q, pt=False):
     return out
 
 
-def broll_candidates(cut, per_cut=5):
+def broll_candidates(cut, per_cut=4):
     seen, cands = set(), []
     for qi, q in enumerate(cut.get("qs") or [cut["q"]]):
         for c in pexels_search(q, cut.get("pt", False)):
@@ -330,8 +335,8 @@ def vision_pick(cuts, out_words):
     picks = {}
     if not GEMINI_KEY:
         return picks
-    for start in range(0, len(cuts), 8):
-        batch = list(enumerate(cuts))[start:start + 8]
+    for start in range(0, len(cuts), 16):
+        batch = list(enumerate(cuts))[start:start + 16]
         parts = [{"text": "Você é editor de Shorts virais. Para cada CORTE, veja a fala e escolha a imagem de "
                           "b-roll que melhor ilustra a frase, com melhor qualidade visual (nítida, bonita, cinematográfica, "
                           "sem texto/marca d'água, sem parecer genérica). "
@@ -349,13 +354,15 @@ def vision_pick(cuts, out_words):
                     continue
                 parts.append({"text": f"opção {j}:"})
                 parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(img).decode()}})
-        try:
-            txt = ask_gemini("gemini-3.8-flash", parts)
-            data = json.loads(re.search(r"\{.*\}", txt, re.S).group(0))
-            for p in data.get("picks", []):
-                picks[int(p["corte"])] = int(p["opcao"])
-        except Exception as ex:
-            print(f"  escolha visual falhou ({ex}); usando ranking", flush=True)
+        for model in dict.fromkeys(_GEMINI_OK + GEMINI_MODELS):
+            try:
+                txt = ask_gemini(model, parts)
+                data = json.loads(re.search(r"\{.*\}", txt, re.S).group(0))
+                for p in data.get("picks", []):
+                    picks[int(p["corte"])] = int(p["opcao"])
+                break
+            except Exception as ex:
+                print(f"  escolha visual {model} falhou ({str(ex)[:120]})", flush=True)
     return picks
 
 
@@ -517,6 +524,9 @@ def edit(src, out, words_json=None, fake_broll=False):
             except Exception as ex:
                 print(f"IA falhou ({ex}); usando plano simples", flush=True)
         if not cuts:
+            if os.getenv("ALLOW_SIMPLE_PLAN") != "1":
+                # sem IA o b-roll fica ruim: melhor adiar e tentar de novo na próxima execução
+                raise RuntimeError("IA indisponível agora (Gemini ocupado ou sem cota) — vídeo adiado")
             title, cuts = fallback_plan(out_words, total)
             plan_src = "simples"
         cuts = normalize_cuts(cuts, total)
