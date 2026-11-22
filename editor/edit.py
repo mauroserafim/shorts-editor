@@ -45,7 +45,7 @@ FONTS_DIR = os.getenv("FONTS_DIR", "")
 MAX_GAP = 0.35          # pausa > isso é cortada
 PAD = 0.15              # respiro antes/depois da fala
 CUT_MIN, CUT_MAX = 1.8, 3.6  # duração de cada b-roll no topo
-TITLE_DUR = 3.5
+TITLE_DUR = 3.0
 
 
 def run(cmd):
@@ -423,7 +423,8 @@ WrapStyle: 2
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Cap,{FONT},104,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,1,0,1,7,2,5,30,30,0,1
-Style: Title,{FONT},100,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,2,0,1,9,5,5,30,30,0,1
+Style: TitleR,{FONT},84,&H00FFFFFF,&H00FFFFFF,&H002828D6,&H002828D6,-1,0,0,0,100,100,1,0,3,20,0,5,30,30,0,1
+Style: TitleB,{FONT},84,&H00FFFFFF,&H00FFFFFF,&H00A0461A,&H00A0461A,-1,0,0,0,100,100,1,0,3,20,0,5,30,30,0,1
 Style: Box,{FONT},20,&H00000000,&H00000000,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
 Style: Cred,{FONT},42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,28,1
 
@@ -433,16 +434,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     ev = []
     title_end = min(TITLE_DUR, total)
     if title:
-        # estilo Shorts viral: texto grande branco, contorno preto grosso, palavra-chave amarela, entrada com "pop"
-        def fmt(line):
-            return re.sub(r"\*([^*]+)\*", lambda m: r"{\c&H00D4FF&}" + m.group(1) + r"{\c&HFFFFFF&}", line)
-        ev.append(f"Dialogue: 2,{ass_time(0)},{ass_time(title_end)},Box,,0,0,0,,"
-                  + r"{\pos(0,0)\alpha&H70&\fad(150,200)\p1}" + f"m 0 0 l {W} 0 {W} {TOP_H} 0 {TOP_H}" + r"{\p0}")
-        ev.append(f"Dialogue: 3,{ass_time(0)},{ass_time(title_end)},Title,,0,0,0,,"
-                  + r"{\pos(540,320)\fad(0,200)\fscx40\fscy40\t(0,160,\fscx110\fscy110)\t(160,260,\fscx100\fscy100)}"
-                  + r"\N".join(fmt(l) for l in title))
-    # legendas: 1-3 palavras (o título fica no topo, então a legenda já começa junto)
-    words = out_words
+        # título: texto branco em tarjas vermelha e azul (cores dos EUA), na linha divisória, com "pop" de entrada
+        lines = [l.replace("*", "").strip() for l in title if l.strip()]
+        ys = [640] if len(lines) == 1 else [588, 702]
+        for k, (line, y) in enumerate(zip(lines, ys)):
+            d = k * 120  # segunda tarja entra logo depois
+            ev.append(f"Dialogue: {3 + k},{ass_time(0)},{ass_time(title_end)},{'TitleR' if k == 0 else 'TitleB'},,0,0,0,,"
+                      + r"{\pos(540," + str(y) + r")\fad(0,180)\fscx0\fscy0"
+                      + rf"\t({d},{d + 160},\fscx108\fscy108)\t({d + 160},{d + 240},\fscx100\fscy100)" + "}" + line)
+    # legendas: 1-3 palavras, só depois que o título sai
+    words = [w for w in out_words if w["end"] > title_end]
     groups, cur = [], []
     for i, w in enumerate(words):
         cur.append(w)
@@ -455,7 +456,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         nxt_start = groups[gi + 1][0]["start"] if gi + 1 < len(groups) else g[-1]["end"] + 0.4
         texts = [clean(w["word"]) for w in g]
         for wi, w in enumerate(g):
-            st = w["start"]
+            st = max(w["start"], title_end)
             en = g[wi + 1]["start"] if wi + 1 < len(g) else min(nxt_start, g[-1]["end"] + 0.5)
             if en - st < 0.03:
                 continue
