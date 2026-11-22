@@ -184,15 +184,26 @@ Regras:
             if use_fmt:
                 body["response_format"] = {"type": "json_object"}
             try:
-                url = "https://models.github.ai/inference/chat/completions"
-                hdr = {"Authorization": f"Bearer {GH_TOKEN}", "Content-Type": "application/json",
-                       "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
-                for _ in range(3):  # redirect manual: requests vira POST em GET e a API responde "OK"
-                    r = requests.post(url, headers=hdr, json=body, timeout=120, allow_redirects=False)
-                    if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
-                        url = requests.compat.urljoin(url, r.headers["location"])
-                        continue
-                    break
+                # curl igual à documentação do GitHub Models (requests recebia "OK" em vez da resposta)
+                cp = subprocess.run(["curl", "-sS", "-L", "-X", "POST", "-w", "\n__HTTP__%{http_code}",
+                                     "https://models.github.ai/inference/chat/completions",
+                                     "-H", "Accept: application/vnd.github+json",
+                                     "-H", f"Authorization: Bearer {GH_TOKEN}",
+                                     "-H", "X-GitHub-Api-Version: 2022-11-28",
+                                     "-H", "Content-Type: application/json",
+                                     "--data-binary", "@-"],
+                                    input=json.dumps(body), capture_output=True, text=True, timeout=180)
+                out_txt, _, code = cp.stdout.rpartition("\n__HTTP__")
+
+                class _R:  # mesmo formato que o resto do código espera
+                    status_code = int(code or 0)
+                    text = out_txt
+                    headers = {"content-type": "curl"}
+                    def json(self):
+                        return json.loads(out_txt)
+                r = _R()
+                if cp.returncode != 0:
+                    raise RuntimeError(f"curl: {cp.stderr[:300]}")
                 txt = r.text
                 if r.status_code != 200:
                     raise RuntimeError(f"HTTP {r.status_code}: {txt[:300]}")
