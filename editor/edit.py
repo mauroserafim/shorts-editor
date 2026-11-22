@@ -42,7 +42,7 @@ FONTS_DIR = os.getenv("FONTS_DIR", "")
 MAX_GAP = 0.35          # pausa > isso é cortada
 PAD = 0.15              # respiro antes/depois da fala
 CUT_MIN, CUT_MAX = 1.8, 3.6  # duração de cada b-roll no topo
-TITLE_DUR = 3.2
+TITLE_DUR = 3.5
 
 
 def run(cmd):
@@ -168,14 +168,20 @@ Transcrição com tempos (duração total {total:.1f}s):
 
 Responda SÓ um JSON:
 {{"title": ["LINHA 1", "LINHA 2"],
-  "cuts": [{{"t": 0.0, "q": "english pexels query"}}, ...]}}
+  "cuts": [{{"t": 0.0, "q": ["query 1", "query 2", "query 3"]}}, ...]}}
 
 Regras:
-- title: gancho curioso em MAIÚSCULAS, português, 2 linhas de no máximo 22 caracteres cada, sobre o assunto do vídeo.
+- title: gancho no estilo dos Shorts com milhões de views (curiosidade, contraste, número ou pergunta), em MAIÚSCULAS,
+  português, 2 linhas de no máximo 18 caracteres cada. Marque 1 ou 2 palavras-chave com *asteriscos* (ficam amarelas).
+  Ex: ["OPERÁRIO NO *BRASIL*", "VS NOS *EUA*"], ["QUANTO GANHA", "UM *PEDREIRO* AQUI?"].
 - cuts: b-rolls que cobrem o vídeo inteiro. O primeiro em t=0. Cada um dura entre {CUT_MIN} e {CUT_MAX}s até o próximo.
   Sincronize com o que está sendo falado naquele instante.
-- q: 2 a 4 palavras EM INGLÊS descrevendo uma cena concreta filmável de banco de vídeo (ex: "factory worker assembly line",
-  "family road trip car", "counting dollar bills", "brazil favela aerial"). Nada de nomes de pessoas ou marcas. Varie as cenas."""
+- q: 3 buscas EM INGLÊS para o banco de vídeos Pexels, da mais específica para a mais genérica, cada uma com 2 a 5 palavras.
+  Pense como um editor profissional: cenas cinematográficas, concretas, com gente real e emoção, que ilustrem exatamente a
+  frase (ex: para "o cara não tinha carro, pegava ônibus" -> ["worker waiting crowded bus stop", "people boarding city bus",
+  "bus stop morning"]). Quando falar do Brasil use "brazil"/"brazilian"/"latin america"; dos EUA, "american"/"usa".
+  Nada de nomes de pessoas ou marcas. Não repita cenas.
+"""
     plan, last_err = None, None
     attempts = []
     if GEMINI_KEY:
@@ -196,8 +202,14 @@ Regras:
             print(f"  IA {provider} {model}: {ex}", flush=True)
     if not plan:
         raise RuntimeError(last_err or "nenhuma IA configurada")
-    cuts = sorted(({"t": float(c["t"]), "q": str(c["q"])} for c in plan["cuts"]), key=lambda c: c["t"])
-    title = [str(x).upper() for x in plan.get("title", [])][:2]
+    cuts = []
+    for c in plan["cuts"]:
+        qs = c["q"] if isinstance(c["q"], list) else [c["q"]]
+        qs = [str(q) for q in qs if str(q).strip()][:3]
+        if qs:
+            cuts.append({"t": float(c["t"]), "q": qs[0], "qs": qs})
+    cuts.sort(key=lambda c: c["t"])
+    title = [str(x).upper().replace("**", "*") for x in plan.get("title", [])][:2]
     return title, cuts
 
 
@@ -211,7 +223,8 @@ def ask_gemini(model, prompt):
         try:
             r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
                               params={"key": GEMINI_KEY},
-                              json={"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                              json={"contents": [{"role": "user", "parts": prompt if isinstance(prompt, list)
+                                                                           else [{"text": prompt}]}],
                                     "generationConfig": gen},
                               timeout=300)
         except requests.exceptions.Timeout:
@@ -253,7 +266,7 @@ def fallback_plan(out_words, total):
         ws = sorted({x for x in ws if len(x) > 3 and x not in STOP}, key=len, reverse=True)
         cuts.append({"t": t, "q": " ".join(ws[:2]) or "united states city", "pt": True})
         t += 2.8
-    return ["VOCÊ PRECISA", "VER ISSO"], cuts
+    return ["VOCÊ PRECISA", "*VER ISSO*"], cuts
 
 
 def normalize_cuts(cuts, total):
@@ -277,48 +290,92 @@ def normalize_cuts(cuts, total):
 
 
 # ------------------------------------------------------------ 5. b-roll Pexels (paisagem, topo)
-def pexels_video(q, used, pt=False):
-    params = {"query": q, "orientation": "landscape", "per_page": 15, "size": "medium"}
+def pexels_search(q, pt=False):
+    params = {"query": q, "orientation": "landscape", "per_page": 15}
     if pt:
         params["locale"] = "pt-BR"
     r = requests.get("https://api.pexels.com/videos/search", headers={"Authorization": PEXELS_KEY},
                      params=params, timeout=30)
     if r.status_code != 200:
-        return None
-    for v in r.json().get("videos", []):
-        if v["id"] in used or v.get("duration", 0) < 4:
-            continue
+        return []
+    out = []
+    for rank, v in enumerate(r.json().get("videos", [])):
         files = [f for f in v.get("video_files", []) if f.get("width") and f["width"] >= 1280
                  and f.get("file_type") == "video/mp4"]
-        if not files:
+        if not files or v.get("duration", 0) < 3:
             continue
-        files.sort(key=lambda f: abs(f["width"] - 1920))
-        used.add(v["id"])
-        return files[0]["link"]
-    return None
+        hd = [f for f in files if f["width"] >= 1920]
+        f = min(hd, key=lambda f: f["width"]) if hd else max(files, key=lambda f: f["width"])
+        out.append({"id": v["id"], "link": f["link"], "w": f["width"], "vdur": v.get("duration", 0),
+                    "thumb": v.get("image", ""), "rank": rank, "q": q})
+    return out
 
 
-def make_top_clip(cut, used, tmp, i, fake=False):
+def broll_candidates(cut, per_cut=5):
+    seen, cands = set(), []
+    for qi, q in enumerate(cut.get("qs") or [cut["q"]]):
+        for c in pexels_search(q, cut.get("pt", False)):
+            if c["id"] in seen:
+                continue
+            seen.add(c["id"])
+            c["score"] = qi * 10 + c["rank"] - (4 if c["w"] >= 1920 else 0)  # busca mais específica + Full HD/4K primeiro
+            cands.append(c)
+    cands.sort(key=lambda c: c["score"])
+    return cands[:per_cut]
+
+
+def vision_pick(cuts, out_words):
+    """Gemini olha as miniaturas e escolhe o melhor b-roll de cada trecho (como um editor)."""
+    import base64
+    picks = {}
+    if not GEMINI_KEY:
+        return picks
+    for start in range(0, len(cuts), 8):
+        batch = list(enumerate(cuts))[start:start + 8]
+        parts = [{"text": "Você é editor de Shorts virais. Para cada CORTE, veja a fala e escolha a imagem de "
+                          "b-roll que melhor ilustra a frase, com melhor qualidade visual (nítida, bonita, cinematográfica, "
+                          "sem texto/marca d'água, sem parecer genérica). "
+                          'Responda SÓ JSON: {"picks": [{"corte": N, "opcao": M}, ...]}'}]
+        for i, c in batch:
+            if not c.get("cands"):
+                continue
+            fala = " ".join(w["word"] for w in out_words if c["t"] - 0.3 <= w["start"] < c["t"] + c["dur"])
+            parts.append({"text": f"\nCORTE {i} — fala: \"{fala}\" — ideia: {c['q']}"})
+            for j, cand in enumerate(c["cands"]):
+                try:
+                    url = cand["thumb"] + ("&" if "?" in cand["thumb"] else "?") + "auto=compress&cs=tinysrgb&w=360"
+                    img = requests.get(url, timeout=20).content
+                except Exception:
+                    continue
+                parts.append({"text": f"opção {j}:"})
+                parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(img).decode()}})
+        try:
+            txt = ask_gemini("gemini-3.8-flash", parts)
+            data = json.loads(re.search(r"\{.*\}", txt, re.S).group(0))
+            for p in data.get("picks", []):
+                picks[int(p["corte"])] = int(p["opcao"])
+        except Exception as ex:
+            print(f"  escolha visual falhou ({ex}); usando ranking", flush=True)
+    return picks
+
+
+def make_top_clip(cut, tmp, i, fake=False):
     outp = os.path.join(tmp, f"top{i:03d}.mp4")
     frames = max(1, round(cut["dur"] * FPS))
-    if not fake:
-        link = None
-        q = cut["q"]
-        for qq in (q, " ".join(q.split()[:2]), q.split()[0]):
-            link = pexels_video(qq, used, cut.get("pt", False))
-            if link:
-                break
-        if link:
-            raw = os.path.join(tmp, f"raw{i:03d}.mp4")
-            with requests.get(link, stream=True, timeout=180) as r:
-                r.raise_for_status()
-                with open(raw, "wb") as f:
-                    for ch in r.iter_content(1 << 20):
-                        f.write(ch)
-            run(["ffmpeg", "-y", "-ss", "0.5", "-stream_loop", "-1", "-i", raw, "-frames:v", str(frames), "-an",
-                 "-vf", f"scale={W}:{TOP_H}:force_original_aspect_ratio=increase,crop={W}:{TOP_H},fps={FPS},setsar=1",
-                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", "-pix_fmt", "yuv420p", outp])
-            return outp
+    if not fake and cut.get("link"):
+        raw = os.path.join(tmp, f"raw{i:03d}.mp4")
+        with requests.get(cut["link"], stream=True, timeout=180) as r:
+            r.raise_for_status()
+            with open(raw, "wb") as f:
+                for ch in r.iter_content(1 << 20):
+                    f.write(ch)
+        vdur = cut.get("vdur", 0)
+        ss = min(max(0.5, vdur * 0.25), vdur - cut["dur"] - 0.3) if vdur > cut["dur"] + 1.5 else 0.3
+        run(["ffmpeg", "-y", "-ss", f"{ss:.2f}", "-stream_loop", "-1", "-i", raw, "-frames:v", str(frames), "-an",
+             "-vf", f"scale={W}:{TOP_H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{TOP_H},"
+                    f"fps={FPS},setsar=1,eq=contrast=1.04:saturation=1.08",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", outp])
+        return outp
     txt = re.sub(r"[^A-Za-z0-9 ]", "", cut["q"])[:30]
     run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"testsrc2=s={W}x{TOP_H}:r={FPS}", "-frames:v", str(frames),
          "-vf", f"drawtext=text='{txt}':fontsize=50:fontcolor=white:x=(w-tw)/2:y=60:box=1:boxcolor=black",
@@ -350,8 +407,8 @@ WrapStyle: 2
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Cap,{FONT},104,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,1,0,1,7,2,5,30,30,0,1
-Style: Title,{FONT},84,&H00000000,&H00000000,&H00000000,&H00000000,-1,0,0,0,100,100,1,0,1,0,0,5,20,20,0,1
-Style: Box,{FONT},20,&H0000CCFF,&H0000CCFF,&H0000CCFF,&H0000CCFF,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
+Style: Title,{FONT},100,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,2,0,1,9,5,5,30,30,0,1
+Style: Box,{FONT},20,&H00000000,&H00000000,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
 Style: Cred,{FONT},42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,28,1
 
 [Events]
@@ -360,14 +417,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     ev = []
     title_end = min(TITLE_DUR, total)
     if title:
-        bh = 34 + 84 * len(title)
-        y0 = 665 - bh  # caixa termina logo abaixo da linha divisória
+        # estilo Shorts viral: texto grande branco, contorno preto grosso, palavra-chave amarela, entrada com "pop"
+        def fmt(line):
+            return re.sub(r"\*([^*]+)\*", lambda m: r"{\c&H00D4FF&}" + m.group(1) + r"{\c&HFFFFFF&}", line)
         ev.append(f"Dialogue: 2,{ass_time(0)},{ass_time(title_end)},Box,,0,0,0,,"
-                  + r"{\pos(45," + str(y0) + r")\fad(250,150)\p1}" + f"m 0 0 l 990 0 990 {bh} 0 {bh}" + r"{\p0}")
+                  + r"{\pos(0,0)\alpha&H70&\fad(150,200)\p1}" + f"m 0 0 l {W} 0 {W} {TOP_H} 0 {TOP_H}" + r"{\p0}")
         ev.append(f"Dialogue: 3,{ass_time(0)},{ass_time(title_end)},Title,,0,0,0,,"
-                  + r"{\pos(540," + str(y0 + bh // 2) + r")\fad(250,150)}" + r"\N".join(title))
-    # legendas: 1-3 palavras, só depois do título
-    words = [w for w in out_words if w["end"] > title_end]
+                  + r"{\pos(540,320)\fad(0,200)\fscx40\fscy40\t(0,160,\fscx110\fscy110)\t(160,260,\fscx100\fscy100)}"
+                  + r"\N".join(fmt(l) for l in title))
+    # legendas: 1-3 palavras (o título fica no topo, então a legenda já começa junto)
+    words = out_words
     groups, cur = [], []
     for i, w in enumerate(words):
         cur.append(w)
@@ -380,7 +439,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         nxt_start = groups[gi + 1][0]["start"] if gi + 1 < len(groups) else g[-1]["end"] + 0.4
         texts = [clean(w["word"]) for w in g]
         for wi, w in enumerate(g):
-            st = max(w["start"], title_end)
+            st = w["start"]
             en = g[wi + 1]["start"] if wi + 1 < len(g) else min(nxt_start, g[-1]["end"] + 0.5)
             if en - st < 0.03:
                 continue
@@ -463,15 +522,37 @@ def edit(src, out, words_json=None, fake_broll=False):
         cuts = normalize_cuts(cuts, total)
         print(f"Título: {' / '.join(title)}", flush=True)
 
-        # topo: b-rolls
-        used, tops = set(), []
+        # topo: b-rolls — candidatos do Pexels + escolha visual pelo Gemini
+        fake = fake_broll or not PEXELS_KEY
+        if not fake:
+            for c in cuts:
+                try:
+                    c["cands"] = broll_candidates(c)
+                except Exception as ex:
+                    print(f"  busca '{c['q']}' falhou: {ex}", flush=True)
+                    c["cands"] = []
+            picks = vision_pick(cuts, out_words)
+            print(f"Escolha visual: {len(picks)}/{len(cuts)} trechos", flush=True)
+            used = set()
+            for i, c in enumerate(cuts):
+                order = list(range(len(c["cands"])))
+                if i in picks and 0 <= picks[i] < len(order):
+                    order.remove(picks[i])
+                    order.insert(0, picks[i])
+                for j in order:
+                    cand = c["cands"][j]
+                    if cand["id"] not in used:
+                        used.add(cand["id"])
+                        c.update(link=cand["link"], vdur=cand["vdur"], chosen=cand["q"], w=cand["w"])
+                        break
+        tops = []
         for i, c in enumerate(cuts):
             try:
-                tops.append(make_top_clip(c, used, tmp, i, fake=fake_broll or not PEXELS_KEY))
+                tops.append(make_top_clip(c, tmp, i, fake=fake))
             except Exception as ex:
                 print(f"  b-roll '{c['q']}' falhou: {ex}", flush=True)
-                tops.append(make_top_clip(c, used, tmp, i, fake=True))
-            print(f"  {c['t']:5.1f}s  {c['q']}", flush=True)
+                tops.append(make_top_clip(c, tmp, i, fake=True))
+            print(f"  {c['t']:5.1f}s  {c.get('chosen', c['q'])}  ({c.get('w', '-')}px)", flush=True)
         top = os.path.join(tmp, "top.mp4")
         with open(os.path.join(tmp, "t.txt"), "w") as f:
             f.writelines(f"file '{p}'\n" for p in tops)

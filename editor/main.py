@@ -72,7 +72,7 @@ def main():
             continue
         rclone("copyto", out, f"{REMOTE}{OUT_DIR}/{out_name(name)}")
         line = (f"- ✅ **{out_name(name)}** — {s['duracao_original']}s → {s['duracao_final']}s · "
-                f"{len(s['brolls'])} b-rolls · título: {' / '.join(s['titulo'])} · plano: {s['plano']}")
+                f"{len(s['brolls'])} b-rolls · título: {' / '.join(s['titulo']).replace('*', '')} · plano: {s['plano']}")
         print(line, flush=True)
         report.append(line)
         for p in (src, out):
