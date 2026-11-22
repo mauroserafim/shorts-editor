@@ -179,7 +179,7 @@ Regras:
     plan, last_err = None, None
     attempts = []
     if GEMINI_KEY:
-        attempts += [("gemini", m) for m in ("gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash")]
+        attempts += [("gemini", m) for m in ("gemini-3.8-flash", "gemini-flash-latest", "gemini-3.8-flash", "gemini-flash-latest")]
     if GH_TOKEN:
         attempts += [("github", m) for m in (LLM_MODEL, "openai/gpt-4o-mini")]
     for provider, model in attempts:
@@ -202,11 +202,16 @@ Regras:
 
 
 def ask_gemini(model, prompt):
-    r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                      params={"key": GEMINI_KEY},
-                      json={"contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                            "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json"}},
-                      timeout=120)
+    import time
+    for wait in (0, 10, 30):  # 503 = Gemini ocupado: espera e tenta de novo
+        time.sleep(wait)
+        r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                          params={"key": GEMINI_KEY},
+                          json={"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                                "generationConfig": {"temperature": 0.4, "responseMimeType": "application/json"}},
+                          timeout=120)
+        if r.status_code not in (429, 500, 503):
+            break
     if r.status_code != 200:
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     return r.json()["candidates"][0]["content"]["parts"][0]["text"]
