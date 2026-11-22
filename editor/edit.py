@@ -194,10 +194,9 @@ Regras:
     for provider, model in attempts:
         try:
             content = ask_gemini(model, prompt) if provider == "gemini" else ask_github(model, prompt)
-            m = re.search(r"\{.*\}", content, re.S)
-            if not m:
-                raise RuntimeError(f"sem JSON: {content[:300]!r}")
-            plan = json.loads(m.group(0))
+            plan = parse_json(content)
+            if not plan.get("cuts"):
+                raise RuntimeError(f"sem cortes: {content[:200]!r}")
             print(f"IA ok ({provider} {model})", flush=True)
             if provider == "gemini":
                 _GEMINI_OK.insert(0, model)
@@ -218,9 +217,19 @@ Regras:
     return title, cuts
 
 
+def parse_json(txt):
+    m = re.search(r"\{.*\}", txt, re.S)
+    raw = m.group(0) if m else txt
+    try:
+        return json.loads(raw)
+    except Exception:
+        from json_repair import repair_json  # conserta JSON com vírgula faltando/cortado
+        return json.loads(repair_json(raw))
+
+
 def ask_gemini(model, prompt):
     import time
-    gen = {"temperature": 0.4, "responseMimeType": "application/json",
+    gen = {"temperature": 0.4, "responseMimeType": "application/json", "maxOutputTokens": 8192,
            "thinkingConfig": {"thinkingLevel": "low"}}  # sem "pensar" muito: resposta rápida
     r = None
     for wait in (0, 30, 90):  # 503/429/timeout = Gemini ocupado: espera e tenta de novo
@@ -357,7 +366,7 @@ def vision_pick(cuts, out_words):
         for model in dict.fromkeys(_GEMINI_OK + GEMINI_MODELS):
             try:
                 txt = ask_gemini(model, parts)
-                data = json.loads(re.search(r"\{.*\}", txt, re.S).group(0))
+                data = parse_json(txt)
                 for p in data.get("picks", []):
                     picks[int(p["corte"])] = int(p["opcao"])
                 break
