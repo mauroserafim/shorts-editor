@@ -184,10 +184,15 @@ Regras:
             if use_fmt:
                 body["response_format"] = {"type": "json_object"}
             try:
-                r = requests.post("https://models.github.ai/inference/chat/completions",
-                                  headers={"Authorization": f"Bearer {GH_TOKEN}", "Content-Type": "application/json",
-                                           "Accept": "application/json"},
-                                  json=body, timeout=120)
+                url = "https://models.github.ai/inference/chat/completions"
+                hdr = {"Authorization": f"Bearer {GH_TOKEN}", "Content-Type": "application/json",
+                       "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+                for _ in range(3):  # redirect manual: requests vira POST em GET e a API responde "OK"
+                    r = requests.post(url, headers=hdr, json=body, timeout=120, allow_redirects=False)
+                    if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
+                        url = requests.compat.urljoin(url, r.headers["location"])
+                        continue
+                    break
                 txt = r.text
                 if r.status_code != 200:
                     raise RuntimeError(f"HTTP {r.status_code}: {txt[:300]}")
