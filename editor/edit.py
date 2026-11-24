@@ -46,7 +46,7 @@ MAX_GAP = 0.35          # pausa > isso é cortada
 PAD = 0.15              # respiro antes/depois da fala
 CUT_MIN, CUT_MAX = 1.8, 3.6  # duração de cada b-roll no topo
 TITLE_DUR = 3.0
-SHOW_TITLE = os.getenv("SHOW_TITLE", "0") == "1"  # sem título: legenda já começa no primeiro segundo
+SHOW_TITLE = (os.getenv("SHOW_TITLE") or "1") == "1"  # sem título: legenda já começa no primeiro segundo
 
 
 def run(cmd):
@@ -539,7 +539,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     ev = []
     title_end = min(TITLE_DUR, total) if (title and SHOW_TITLE) else 0.0
-    if title and SHOW_TITLE:
+    if False:  # título antigo (tarjas em ASS) — substituído pelo papel rasgado em PNG
         # título: texto branco em tarjas vermelha e azul (cores dos EUA), na linha divisória, com "pop" de entrada
         lines = [l.replace("*", "").strip() for l in title if l.strip()]
         ys = [640] if len(lines) == 1 else [588, 702]
@@ -711,8 +711,23 @@ def edit(src, out, words_json=None, fake_broll=False):
         build_ass(out_words, title, total, ["Vídeos: Pexels"], ass)
         ass_esc = ass.replace("\\", "/").replace(":", "\\:")
         sub = f"subtitles='{ass_esc}'" + (f":fontsdir='{FONTS_DIR}'" if FONTS_DIR else "")
-        run(["ffmpeg", "-y", "-i", bottom, "-i", top, "-filter_complex",
-             f"[1:v]tpad=stop_mode=clone:stop_duration=5[t];[t][0:v]vstack=inputs=2:shortest=1,{sub},format=yuv420p[v]",
+        inputs, fc = ["-i", bottom, "-i", top], f"[1:v]tpad=stop_mode=clone:stop_duration=5[t];[t][0:v]vstack=inputs=2:shortest=1,{sub}[base]"
+        if title and SHOW_TITLE:
+            from editor.title_card import render_torn_paper
+            tpng = os.path.join(tmp, "title.png")
+            timg = render_torn_paper(title, tpng)
+            tw_, th_ = timg.size
+            te = min(TITLE_DUR, total)
+            inputs += ["-loop", "1", "-t", f"{te:.2f}", "-i", tpng]
+            # papel entra com um "pop" (cresce rápido) e some com fade no fim
+            fc += (f";[2:v]format=rgba,scale=w='trunc(iw*min(1,0.6+t*4)/2)*2':h=-2:eval=frame,"
+                   f"fade=t=out:st={te - 0.2:.2f}:d=0.2:alpha=1,setpts=PTS-STARTPTS[ti]"
+                   f";[base][ti]overlay=x='(W-w)/2':y='{TOP_H}-h/2':eof_action=pass:enable='lt(t,{te:.2f})'[ov]")
+            last = "ov"
+        else:
+            last = "base"
+        fc += f";[{last}]format=yuv420p[v]"
+        run(["ffmpeg", "-y", *inputs, "-filter_complex", fc,
              "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-r", str(FPS),
              "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
              "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])

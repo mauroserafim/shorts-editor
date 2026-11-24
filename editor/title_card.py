@@ -211,3 +211,75 @@ def _star(d, x, y, r, fill):
 
 STYLES = ["navy_slant", "stars_badge", "black_redbar", "news_tag", "split_slant", "two_bars", "glossy_red", "navy_gold",
           "espn_lower", "word_box", "white_red_stack", "pill_tag", "stripes_band", "frame_corners"]
+
+
+def _torn_poly(x0, y0, x1, y1, rough, rng, step=9):
+    """Contorno de papel rasgado (bordas irregulares)."""
+    pts = []
+    x = x0
+    while x < x1:
+        pts.append((x, y0 + rng.uniform(-rough, rough))); x += rng.uniform(step * 0.5, step * 1.5)
+    y = y0
+    while y < y1:
+        pts.append((x1 + rng.uniform(-rough, rough), y)); y += rng.uniform(step * 0.5, step * 1.5)
+    x = x1
+    while x > x0:
+        pts.append((x, y1 + rng.uniform(-rough, rough))); x -= rng.uniform(step * 0.5, step * 1.5)
+    y = y1
+    while y > y0:
+        pts.append((x0 + rng.uniform(-rough, rough), y)); y -= rng.uniform(step * 0.5, step * 1.5)
+    return pts
+
+
+def render_torn_paper(lines, out=None, max_w=980, seed=7, angle=-2.0):
+    """Título em papel branco rasgado + tira vermelha no canto (o estilo escolhido)."""
+    import random
+    import numpy as np
+    rng = random.Random(seed)
+    lines = [l.replace("*", "").strip().upper() for l in lines if l.strip()][:2]
+    size = 128
+    while True:
+        imgs = [_text_img(l, size, NAVY) for l in lines]
+        if max(i.width for i in imgs) <= max_w - 170 or size < 60:
+            break
+        size -= 6
+    tw = max(i.width for i in imgs)
+    gap = int(size * 0.10)
+    th = sum(i.height for i in imgs) + gap * (len(imgs) - 1)
+    PW, PH = tw + 150, th + 110
+    M = 70
+    c = Image.new("RGBA", (PW + 2 * M, PH + 2 * M), (0, 0, 0, 0))
+    # tira vermelha rasgada saindo por baixo, no canto direito
+    red = Image.new("RGBA", c.size, (0, 0, 0, 0))
+    ImageDraw.Draw(red).polygon(_torn_poly(M + PW * 0.62, M + PH - 46, M + PW + 10, M + PH + 30, 6, rng, 7), fill=(196, 18, 36, 255))
+    red = red.rotate(-7, resample=Image.BICUBIC, center=(M + PW, M + PH))
+    # papel
+    paper_mask = Image.new("L", c.size, 0)
+    ImageDraw.Draw(paper_mask).polygon(_torn_poly(M, M, M + PW, M + PH, 6, rng), fill=255)
+    noise = (np.random.default_rng(seed).normal(0, 7, (c.size[1], c.size[0]))).clip(-20, 20)
+    base = np.full((c.size[1], c.size[0], 3), (246, 246, 243), dtype=np.float32)
+    grad = np.linspace(4, -8, c.size[1])[:, None, None]  # leve sombreado de cima pra baixo
+    tex = (base + noise[..., None] + grad).clip(0, 255).astype("uint8")
+    paper = Image.fromarray(tex, "RGB").convert("RGBA")
+    paper.putalpha(paper_mask)
+    # borda branca "fibrosa" do rasgo
+    edge = paper_mask.filter(ImageFilter.MaxFilter(5))
+    fiber = Image.new("RGBA", c.size, (255, 255, 255, 0))
+    fiber.putalpha(edge.point(lambda v: 210 if v else 0))
+    # sombra
+    sh = Image.new("RGBA", c.size, (0, 0, 0, 0))
+    sh.putalpha(paper_mask.point(lambda v: 120 if v else 0))
+    sh = sh.filter(ImageFilter.GaussianBlur(10))
+    c.alpha_composite(sh, (6, 10))
+    c.alpha_composite(red)
+    c.alpha_composite(fiber)
+    c.alpha_composite(paper)
+    y = M + (PH - th) / 2
+    for im in imgs:
+        c.alpha_composite(im, (int(M + (PW - im.width) / 2), int(y)))
+        y += im.height + gap
+    c = c.rotate(angle, resample=Image.BICUBIC, expand=True)
+    c = c.crop(c.getbbox())
+    if out:
+        c.save(out)
+    return c
