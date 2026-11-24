@@ -26,6 +26,7 @@ import sys
 import tempfile
 
 import requests
+from PIL import Image
 
 W, H, FPS = 1080, 1920, 30
 TOP_H = 640
@@ -202,9 +203,9 @@ Responda SÓ um JSON:
   "cuts": [{{"t": 0.0, "q": ["query 1", "query 2", "query 3"]}}, ...]}}
 
 Regras:
-- title: gancho no estilo dos Shorts com milhões de views (curiosidade, contraste, número ou pergunta), em MAIÚSCULAS,
-  português, 2 linhas de no máximo 18 caracteres cada. Marque 1 ou 2 palavras-chave com *asteriscos* (ficam amarelas).
-  Ex: ["OPERÁRIO NO *BRASIL*", "VS NOS *EUA*"], ["QUANTO GANHA", "UM *PEDREIRO* AQUI?"].
+- title: título curto de abertura, numa linha só, em MAIÚSCULAS, português, de 2 a 5 palavras e no máximo 22 caracteres.
+  Resuma a promessa do vídeo com curiosidade ou contraste, como os Shorts com milhões de views.
+  Ex: ["BRASIL X EUA"], ["O CARRO DO OPERÁRIO"], ["ISSO É NORMAL AQUI"], ["GASOLINA NOS EUA"].
 - cuts: b-rolls que cobrem o vídeo inteiro. O primeiro em t=0. Cada um dura entre {CUT_MIN} e {CUT_MAX}s até o próximo.
   Sincronize com o que está sendo falado naquele instante.
 - q: 3 buscas EM INGLÊS para o banco de vídeos Pexels, da mais específica para a mais genérica, cada uma com 2 a 5 palavras.
@@ -308,7 +309,7 @@ def fallback_plan(out_words, total):
         ws = sorted({x for x in ws if len(x) > 3 and x not in STOP}, key=len, reverse=True)
         cuts.append({"t": t, "q": " ".join(ws[:2]) or "united states city", "pt": True})
         t += 2.8
-    return ["VOCÊ PRECISA", "*VER ISSO*"], cuts
+    return ["BRASIL X EUA"], cuts
 
 
 def normalize_cuts(cuts, total):
@@ -713,9 +714,13 @@ def edit(src, out, words_json=None, fake_broll=False):
         sub = f"subtitles='{ass_esc}'" + (f":fontsdir='{FONTS_DIR}'" if FONTS_DIR else "")
         inputs, fc = ["-i", bottom, "-i", top], f"[1:v]tpad=stop_mode=clone:stop_duration=5[t];[t][0:v]vstack=inputs=2:shortest=1,{sub}[base]"
         if title and SHOW_TITLE:
-            from editor.title_card import render_torn_paper
+            from editor.title_card import render_paper_title
             tpng = os.path.join(tmp, "title.png")
-            timg = render_torn_paper(title, tpng)
+            ttext = " ".join(l.replace("*", "").strip() for l in title if l.strip())
+            timg = render_paper_title(ttext, scale=1.0)
+            if timg.width > 980:  # título longo: reduz pra caber com margem
+                timg = timg.resize((980, int(timg.height * 980 / timg.width)), Image.LANCZOS)
+            timg.save(tpng)
             tw_, th_ = timg.size
             te = min(TITLE_DUR, total)
             inputs += ["-loop", "1", "-t", f"{te:.2f}", "-i", tpng]

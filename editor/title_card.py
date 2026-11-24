@@ -214,71 +214,245 @@ STYLES = ["navy_slant", "stars_badge", "black_redbar", "news_tag", "split_slant"
 
 
 def _torn_poly(x0, y0, x1, y1, rough, rng, step=9):
-    """Contorno de papel rasgado (bordas irregulares)."""
+    """Contorno de papel rasgado: passeio aleatório suave + fibras finas (parece rasgo de verdade)."""
     pts = []
-    x = x0
-    while x < x1:
-        pts.append((x, y0 + rng.uniform(-rough, rough))); x += rng.uniform(step * 0.5, step * 1.5)
-    y = y0
-    while y < y1:
-        pts.append((x1 + rng.uniform(-rough, rough), y)); y += rng.uniform(step * 0.5, step * 1.5)
-    x = x1
-    while x > x0:
-        pts.append((x, y1 + rng.uniform(-rough, rough))); x -= rng.uniform(step * 0.5, step * 1.5)
-    y = y1
-    while y > y0:
-        pts.append((x0 + rng.uniform(-rough, rough), y)); y -= rng.uniform(step * 0.5, step * 1.5)
+
+    def edge(a, b, fixed, horizontal, sign):
+        out, off, pos = [], 0.0, a
+        n = 1 if b > a else -1
+        while (pos < b) if n > 0 else (pos > b):
+            off = max(-rough, min(rough, off * 0.85 + rng.gauss(0, rough * 0.45)))
+            fib = rng.uniform(0, rough * 0.35)
+            v = fixed + sign * (off + fib)
+            out.append((pos, v) if horizontal else (v, pos))
+            pos += n * rng.uniform(step * 0.35, step * 0.9)
+        return out
+    pts += edge(x0, x1, y0, True, -1)
+    pts += edge(y0, y1, x1, False, 1)
+    pts += edge(x1, x0, y1, True, 1)
+    pts += edge(y1, y0, x0, False, -1)
     return pts
 
 
-def render_torn_paper(lines, out=None, max_w=980, seed=7, angle=-2.0):
-    """Título em papel branco rasgado + tira vermelha no canto (o estilo escolhido)."""
+def render_torn_paper(lines, out=None, max_w=980, seed=7, angle=-2.0, size=128, blank=False, scale=1.0):
+    """Título em papel branco rasgado + papel vermelho aparecendo no canto inferior direito."""
     import random
     import numpy as np
     rng = random.Random(seed)
     lines = [l.replace("*", "").strip().upper() for l in lines if l.strip()][:2]
-    size = 128
+    size = int(size * scale)
+    max_w = int(max_w * scale)
     while True:
         imgs = [_text_img(l, size, NAVY) for l in lines]
-        if max(i.width for i in imgs) <= max_w - 170 or size < 60:
+        imgs = [i.resize((int(i.width * 0.94), i.height), Image.LANCZOS) for i in imgs]  # letras mais juntas
+        if max(i.width for i in imgs) <= max_w - int(170 * scale) or size < 60:
             break
         size -= 6
     tw = max(i.width for i in imgs)
     gap = int(size * 0.10)
     th = sum(i.height for i in imgs) + gap * (len(imgs) - 1)
-    PW, PH = tw + 150, th + 110
-    M = 70
+    PW, PH = int(tw + 150 * scale), int(th + 115 * scale)
+    M = int(80 * scale)
+    R = 5 * scale
     c = Image.new("RGBA", (PW + 2 * M, PH + 2 * M), (0, 0, 0, 0))
-    # tira vermelha rasgada saindo por baixo, no canto direito
-    red = Image.new("RGBA", c.size, (0, 0, 0, 0))
-    ImageDraw.Draw(red).polygon(_torn_poly(M + PW * 0.62, M + PH - 46, M + PW + 10, M + PH + 30, 6, rng, 7), fill=(196, 18, 36, 255))
-    red = red.rotate(-7, resample=Image.BICUBIC, center=(M + PW, M + PH))
-    # papel
+    # papel vermelho por baixo, aparecendo só no canto inferior direito
+    red_mask = Image.new("L", c.size, 0)
+    ImageDraw.Draw(red_mask).polygon(_torn_poly(M + PW * 0.60, M + PH * 0.80, M + PW + 8 * scale, M + PH + 24 * scale,
+                                                R * 1.1, rng, 6 * scale), fill=255)
+    red_mask = red_mask.rotate(-4, resample=Image.BICUBIC, center=(M + PW, M + PH)).filter(ImageFilter.GaussianBlur(0.6 * scale))
+    rn = np.random.default_rng(seed + 1).normal(0, 6, (c.size[1], c.size[0]))
+    red_tex = np.zeros((c.size[1], c.size[0], 3), np.float32)
+    red_tex[...] = (204, 20, 38)
+    red_tex = (red_tex + rn[..., None]).clip(0, 255).astype("uint8")
+    red = Image.fromarray(red_tex, "RGB").convert("RGBA")
+    red.putalpha(red_mask)
+    # papel branco
     paper_mask = Image.new("L", c.size, 0)
-    ImageDraw.Draw(paper_mask).polygon(_torn_poly(M, M, M + PW, M + PH, 6, rng), fill=255)
-    noise = (np.random.default_rng(seed).normal(0, 7, (c.size[1], c.size[0]))).clip(-20, 20)
-    base = np.full((c.size[1], c.size[0], 3), (246, 246, 243), dtype=np.float32)
-    grad = np.linspace(4, -8, c.size[1])[:, None, None]  # leve sombreado de cima pra baixo
-    tex = (base + noise[..., None] + grad).clip(0, 255).astype("uint8")
+    ImageDraw.Draw(paper_mask).polygon(_torn_poly(M, M, M + PW, M + PH, R, rng, 6 * scale), fill=255)
+    paper_mask = paper_mask.filter(ImageFilter.GaussianBlur(0.5 * scale))
+    noise = np.random.default_rng(seed).normal(0, 5, (c.size[1], c.size[0]))
+    fib = np.random.default_rng(seed + 2).normal(0, 1, (c.size[1] // 3 + 1, c.size[0] // 3 + 1))
+    fib = np.kron(fib, np.ones((3, 3)))[:c.size[1], :c.size[0]] * 3  # textura de fibra leve
+    base = np.full((c.size[1], c.size[0], 3), (247, 247, 244), dtype=np.float32)
+    grad = np.linspace(3, -7, c.size[1])[:, None, None]
+    tex = (base + (noise + fib)[..., None] + grad).clip(0, 255).astype("uint8")
     paper = Image.fromarray(tex, "RGB").convert("RGBA")
     paper.putalpha(paper_mask)
-    # borda branca "fibrosa" do rasgo
-    edge = paper_mask.filter(ImageFilter.MaxFilter(5))
-    fiber = Image.new("RGBA", c.size, (255, 255, 255, 0))
-    fiber.putalpha(edge.point(lambda v: 210 if v else 0))
-    # sombra
+    # franja branca do rasgo (fibras mais claras na borda)
+    edge = paper_mask.filter(ImageFilter.MaxFilter(3 if scale < 1.5 else 5))
+    fringe = Image.new("RGBA", c.size, (255, 255, 255, 0))
+    fringe.putalpha(edge.point(lambda v: int(v * 0.85)))
+    # sombras
     sh = Image.new("RGBA", c.size, (0, 0, 0, 0))
-    sh.putalpha(paper_mask.point(lambda v: 120 if v else 0))
-    sh = sh.filter(ImageFilter.GaussianBlur(10))
-    c.alpha_composite(sh, (6, 10))
+    sh.putalpha(paper_mask.point(lambda v: int(v * 0.45)))
+    sh = sh.filter(ImageFilter.GaussianBlur(9 * scale))
+    rsh = Image.new("RGBA", c.size, (0, 0, 0, 0))
+    rsh.putalpha(red_mask.point(lambda v: int(v * 0.35)))
+    rsh = rsh.filter(ImageFilter.GaussianBlur(6 * scale))
+    c.alpha_composite(rsh, (int(3 * scale), int(6 * scale)))
     c.alpha_composite(red)
+    c.alpha_composite(sh, (int(4 * scale), int(8 * scale)))
+    c.alpha_composite(fringe)
+    c.alpha_composite(paper)
+    if not blank:
+        y = M + (PH - th) / 2
+        for im in imgs:
+            c.alpha_composite(im, (int(M + (PW - im.width) / 2), int(y)))
+            y += im.height + gap
+    c = c.rotate(angle, resample=Image.BICUBIC, expand=True)
+    c = c.crop(c.getbbox())
+    if out:
+        c.save(out)
+    return c
+
+
+def _tear_line(a, b, base, rng, rough, step):
+    """Linha rasgada de a até b (coordenada principal), oscilando em torno de 'base' (função ou valor)."""
+    out, off, pos = [], 0.0, a
+    n = 1 if b > a else -1
+    while (pos < b) if n > 0 else (pos > b):
+        off = max(-rough, min(rough, off * 0.8 + rng.gauss(0, rough * 0.5)))
+        bv = base(pos) if callable(base) else base
+        out.append((pos, bv + off + rng.uniform(-rough * 0.3, rough * 0.3)))
+        pos += n * rng.uniform(step * 0.3, step)
+    return out
+
+
+def render_paper_title(text, out=None, blank=False, scale=2.0, seed=5):
+    """
+    Caixa de título 'Mecanismo Americano': faixa reta de papel branco rasgado, textura leve,
+    papel vermelho aparecendo só no canto inferior direito, texto azul-marinho condensado numa linha.
+    """
+    import random
+    import numpy as np
+    rng = random.Random(seed)
+    S = scale
+    NAVY_D = (14, 26, 60)
+    f = _font(int(150 * S))
+    # texto condensado e com pouco espaço entre palavras (igual à referência)
+    words = text.upper().split() if text else ["BRASIL", "X", "EUA"]
+    wimgs = []
+    for w in words:
+        im = _text_img(w, int(150 * S), NAVY_D)
+        wimgs.append(im.resize((int(im.width * 0.86), im.height), Image.LANCZOS))
+    sp = int(26 * S)
+    tw = sum(i.width for i in wimgs) + sp * (len(wimgs) - 1)
+    th = max(i.height for i in wimgs)
+    PW, PH = int(tw / 0.80), int(th * 2.25)
+    M = int(40 * S)
+    Wc, Hc = PW + 2 * M, PH + 2 * M
+    rough, step = 3.2 * S, 5 * S
+
+    # contorno do papel branco: retângulo reto rasgado; canto inferior direito arrancado em diagonal
+    x0, y0, x1, y1 = M, M, M + PW, M + PH
+    rip_start = x0 + PW * 0.60
+    rip_rise = PH * 0.24
+
+    def bottom(x):
+        if x < rip_start:
+            return y1
+        return y1 - rip_rise * ((x - rip_start) / (x1 - rip_start)) ** 1.2
+
+    import math
+
+    def rounded_outline(ax0, ay0, ax1, ay1, r, warp=None, rough_=rough * 0.7, wave=2.8 * S):
+        """Perímetro de retângulo com cantos arredondados, com rasgo: ondulação larga + fibras finas."""
+        pts = []
+        def arc(cx, cy, a0, a1):
+            n = max(6, int(abs(a1 - a0) * r / (2.5 * S)))
+            return [(cx + r * math.cos(a0 + (a1 - a0) * k / n), cy + r * math.sin(a0 + (a1 - a0) * k / n),
+                     math.cos(a0 + (a1 - a0) * k / n), math.sin(a0 + (a1 - a0) * k / n)) for k in range(n)]
+        def line(xa, ya, xb, yb, nx, ny):
+            L = math.hypot(xb - xa, yb - ya); n = max(2, int(L / (2.5 * S)))
+            return [(xa + (xb - xa) * k / n, ya + (yb - ya) * k / n, nx, ny) for k in range(n)]
+        seq = (line(ax0 + r, ay0, ax1 - r, ay0, 0, -1) + arc(ax1 - r, ay0 + r, -math.pi / 2, 0)
+               + line(ax1, ay0 + r, ax1, ay1 - r, 1, 0) + arc(ax1 - r, ay1 - r, 0, math.pi / 2)
+               + line(ax1 - r, ay1, ax0 + r, ay1, 0, 1) + arc(ax0 + r, ay1 - r, math.pi / 2, math.pi)
+               + line(ax0, ay1 - r, ax0, ay0 + r, -1, 0) + arc(ax0 + r, ay0 + r, math.pi, 1.5 * math.pi))
+        off, ph = 0.0, rng.uniform(0, 6.28)
+        out = []
+        for k, (x, y, nx, ny) in enumerate(seq):
+            if warp:
+                x, y = warp(x, y)
+            off = max(-rough_, min(rough_, off * 0.85 + rng.gauss(0, rough_ * 0.35)))
+            w = wave * math.sin(k * 0.035 + ph) + wave * 0.6 * math.sin(k * 0.11 + ph * 2)
+            d = off + w + (rng.uniform(0, rough_ * 0.6) if rng.random() < 0.08 else 0)
+            out.append((x + nx * d, y + ny * d))
+        return out
+
+    R = PH * 0.10
+
+    def rip(x, y):  # arranca o canto inferior direito do papel branco (nada de branco abaixo da linha do rasgo)
+        if x > rip_start:
+            t = min(1.0, (x - rip_start) / (x1 - rip_start))
+            lim = y1 - rip_rise * (t ** 1.3)
+            if y > lim:
+                return x, lim
+        return x, y
+
+    paper_poly = rounded_outline(x0, y0, x1, y1, R, warp=rip)
+    red_poly = rounded_outline(rip_start - 40 * S, y1 - rip_rise - 30 * S, x1 + 2 * S, y1 + 3 * S, R * 0.8,
+                               rough_=rough * 0.8, wave=1.0 * S)
+
+    def mask(poly, blur=0.6):
+        m = Image.new("L", (Wc, Hc), 0)
+        ImageDraw.Draw(m).polygon([(float(x), float(y)) for x, y in poly], fill=255)
+        return m.filter(ImageFilter.GaussianBlur(blur * S))
+
+    pm = mask(paper_poly)
+    rm = mask(red_poly)
+    nrng = np.random.default_rng(seed)
+
+    def tex(color, grain=5, mottle=9):
+        g = nrng.normal(0, grain, (Hc, Wc))
+        m = nrng.normal(0, 1, (Hc // 24 + 2, Wc // 24 + 2))
+        mi = Image.fromarray(((m - m.min()) / (np.ptp(m) + 1e-6) * 255).astype("uint8")).resize((Wc, Hc), Image.BICUBIC)
+        mo = (np.asarray(mi, np.float32) / 255 - 0.5) * mottle
+        arr = np.zeros((Hc, Wc, 3), np.float32) + color
+        return (arr + (g + mo)[..., None]).clip(0, 255).astype("uint8")
+
+    # escurece levemente perto das bordas do papel (volume)
+    dist = np.asarray(pm.filter(ImageFilter.GaussianBlur(14 * S)), np.float32) / 255
+    ptex = tex((244, 244, 241)).astype(np.float32)
+    ptex = (ptex * (0.90 + 0.10 * dist[..., None])).clip(0, 255).astype("uint8")
+    paper = Image.fromarray(ptex, "RGB").convert("RGBA")
+    paper.putalpha(pm)
+    rtex = tex((212, 18, 32), grain=6, mottle=14).astype(np.float32)
+    yy = np.linspace(1.08, 0.85, Hc)[:, None, None]
+    red = Image.fromarray((rtex * yy).clip(0, 255).astype("uint8"), "RGB").convert("RGBA")
+    red.putalpha(rm)
+    # fibras brancas saindo do rasgo
+    fib = Image.new("L", (Wc, Hc), 0)
+    fd = ImageDraw.Draw(fib)
+    for x, y in paper_poly[::5]:
+        cx, cy = x0 + PW / 2, y0 + PH / 2
+        dx, dy = x - cx, y - cy
+        n = (dx * dx + dy * dy) ** 0.5 + 1e-6
+        L = rng.uniform(1, 4) * S
+        fd.line([x, y, x + dx / n * L, y + dy / n * L], fill=rng.randint(140, 230), width=max(1, int(S)))
+    fib = fib.filter(ImageFilter.GaussianBlur(0.4 * S))
+    fiber = Image.new("RGBA", (Wc, Hc), (250, 250, 248, 0))
+    fiber.putalpha(fib)
+    # sombras
+    def shadow(m, a, b, off):
+        s_ = Image.new("RGBA", (Wc, Hc), (0, 0, 0, 0))
+        s_.putalpha(m.point(lambda v: int(v * a)))
+        return s_.filter(ImageFilter.GaussianBlur(b * S)), off
+
+    c = Image.new("RGBA", (Wc, Hc), (0, 0, 0, 0))
+    s1, o1 = shadow(rm, 0.30, 8, (int(1 * S), int(4 * S)))
+    c.alpha_composite(s1, o1)
+    c.alpha_composite(red)
+    s2, o2 = shadow(pm, 0.32, 12, (int(1 * S), int(5 * S)))
+    c.alpha_composite(s2, o2)
     c.alpha_composite(fiber)
     c.alpha_composite(paper)
-    y = M + (PH - th) / 2
-    for im in imgs:
-        c.alpha_composite(im, (int(M + (PW - im.width) / 2), int(y)))
-        y += im.height + gap
-    c = c.rotate(angle, resample=Image.BICUBIC, expand=True)
+    if not blank:
+        x = x0 + (PW - tw) / 2
+        yb = y0 + (PH - th) / 2 - PH * 0.02
+        for im in wimgs:
+            c.alpha_composite(im, (int(x), int(yb + (th - im.height))))
+            x += im.width + sp
     c = c.crop(c.getbbox())
     if out:
         c.save(out)
