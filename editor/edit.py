@@ -46,6 +46,7 @@ MAX_GAP = 0.35          # pausa > isso é cortada
 PAD = 0.15              # respiro antes/depois da fala
 CUT_MIN, CUT_MAX = 1.8, 3.6  # duração de cada b-roll no topo
 TITLE_DUR = 3.0
+SHOW_TITLE = os.getenv("SHOW_TITLE", "0") == "1"  # sem título: legenda já começa no primeiro segundo
 
 
 def run(cmd):
@@ -413,6 +414,47 @@ def clean(w):
     return w.upper()
 
 
+CAP_SIZE = 100
+SAFE_W = 900          # largura útil da legenda (90 px de margem de cada lado)
+MAX_CAP_CHARS = 18    # grupos curtos: no máximo ~18 letras por vez
+_CAP_FONT = None
+
+
+def _cap_font(size):
+    """Fonte real da legenda, pra medir a largura do texto."""
+    global _CAP_FONT
+    from PIL import ImageFont
+    if _CAP_FONT is None:
+        path = ""
+        try:
+            path = subprocess.run(["fc-match", "-f", "%{file}", FONT], capture_output=True, text=True).stdout.strip()
+        except Exception:
+            pass
+        _CAP_FONT = path
+    try:
+        f = ImageFont.truetype(_CAP_FONT, size) if _CAP_FONT else None
+        if f is not None:
+            try:
+                f.set_variation_by_name("ExtraBold")  # fonte variável: mede no peso certo
+            except Exception:
+                pass
+        return f
+    except Exception:
+        return None
+
+
+def fit_size(text, size):
+    """Diminui a fonte até o texto (com contorno) caber em SAFE_W."""
+    f = _cap_font(size)
+    if f is not None:
+        w = f.getlength(text) + 2 * 7 + len(text) * 1
+    else:
+        w = len(text) * size * 0.70
+    if w <= SAFE_W:
+        return size
+    return max(56, int(size * SAFE_W / w))
+
+
 def build_ass(out_words, title, total, credits, path):
     header = f"""[Script Info]
 ScriptType: v4.00+
@@ -422,7 +464,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,{FONT},104,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,1,0,1,7,2,5,30,30,0,1
+Style: Cap,{FONT},{CAP_SIZE},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,1,0,1,7,2,5,30,30,0,1
 Style: TitleR,{FONT},84,&H00FFFFFF,&H00FFFFFF,&H002828D6,&H002828D6,-1,0,0,0,100,100,1,0,3,20,0,5,30,30,0,1
 Style: TitleB,{FONT},84,&H00FFFFFF,&H00FFFFFF,&H00A0461A,&H00A0461A,-1,0,0,0,100,100,1,0,3,20,0,5,30,30,0,1
 Style: Box,{FONT},20,&H00000000,&H00000000,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
@@ -432,8 +474,8 @@ Style: Cred,{FONT},42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,10
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     ev = []
-    title_end = min(TITLE_DUR, total)
-    if title:
+    title_end = min(TITLE_DUR, total) if (title and SHOW_TITLE) else 0.0
+    if title and SHOW_TITLE:
         # título: texto branco em tarjas vermelha e azul (cores dos EUA), na linha divisória, com "pop" de entrada
         lines = [l.replace("*", "").strip() for l in title if l.strip()]
         ys = [640] if len(lines) == 1 else [588, 702]
@@ -448,7 +490,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     for i, w in enumerate(words):
         cur.append(w)
         nxt = words[i + 1] if i + 1 < len(words) else None
-        if (len(cur) >= 3 or nxt is None or nxt["start"] - w["end"] > 0.3
+        chars = len(" ".join(clean(x["word"]) for x in cur))
+        nxt_chars = chars + 1 + len(clean(nxt["word"])) if nxt else 0
+        if (len(cur) >= 3 or nxt is None or nxt["start"] - w["end"] > 0.3 or nxt_chars > MAX_CAP_CHARS
                 or w["word"].endswith((".", "?", "!", ","))):
             groups.append(cur)
             cur = []
@@ -461,8 +505,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if en - st < 0.03:
                 continue
             parts = [(r"{\c&H00D4FF&}" + t + r"{\c&HFFFFFF&}") if k == wi else t for k, t in enumerate(texts)]
+            fs = fit_size(" ".join(texts), CAP_SIZE)
             ev.append(f"Dialogue: 1,{ass_time(st)},{ass_time(en)},Cap,,0,0,0,,"
-                      r"{\pos(540,640)}" + " ".join(parts))
+                      + r"{\pos(540,640)\fs" + str(fs) + "}" + " ".join(parts))
     if credits:
         ev.append(f"Dialogue: 4,{ass_time(max(0, total - 2))},{ass_time(total)},Cred,,0,0,0,,"
                   + r"\N".join(credits))
