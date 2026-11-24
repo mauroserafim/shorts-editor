@@ -108,6 +108,33 @@ def map_time(t, segs):
     return None
 
 
+ZOOM_LEVELS = [1.0, 1.14, 1.04, 1.24]   # aberto, médio, aberto, fechado
+PUSH = 0.04                              # aproximação lenta durante o plano
+PUNCH = 0.05                             # "soco" de zoom no início de cada plano
+SHOT_MIN, SHOT_MAX = 2.2, 3.6
+
+
+def make_shots(segs, words):
+    """Divide os trechos em planos curtos, cortando sempre entre palavras."""
+    shots = []
+    for sg in segs:
+        s0, s1 = sg["src_start"], sg["src_end"]
+        gaps = [(words[k]["end"] + words[k + 1]["start"]) / 2 for k in range(len(words) - 1)
+                if s0 < words[k]["end"] and words[k + 1]["start"] < s1]
+        t = s0
+        while s1 - t > SHOT_MAX + 0.5:
+            cand = [g for g in gaps if t + SHOT_MIN <= g <= t + SHOT_MAX]
+            if not cand:
+                cand = [g for g in gaps if g > t + SHOT_MIN]
+                if not cand or s1 - cand[0] < 1.0:
+                    break
+            cut = cand[-1] if cand[-1] <= t + SHOT_MAX else cand[0]
+            shots.append({"start": t, "end": cut})
+            t = cut
+        shots.append({"start": t, "end": s1})
+    return shots
+
+
 # ------------------------------------------------------------ 3. rosto
 def detect_faces(path, step=0.4):
     """[(t, cx, cy, size)] no vídeo normalizado 1080x1920."""
@@ -389,8 +416,10 @@ def make_top_clip(cut, tmp, i, fake=False):
         vdur = cut.get("vdur", 0)
         ss = min(max(0.5, vdur * 0.25), vdur - cut["dur"] - 0.3) if vdur > cut["dur"] + 1.5 else 0.3
         run(["ffmpeg", "-y", "-ss", f"{ss:.2f}", "-stream_loop", "-1", "-i", raw, "-frames:v", str(frames), "-an",
-             "-vf", f"scale={W}:{TOP_H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{TOP_H},"
-                    f"fps={FPS},setsar=1,eq=contrast=1.04:saturation=1.08",
+             "-vf", f"scale={W}:{TOP_H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{TOP_H},fps={FPS},"
+                    # Ken Burns: aproximação lenta no b-roll
+                    f"scale=w='2*trunc({W}*(1+0.08*t/{cut['dur']:.3f})/2)':h='2*trunc({TOP_H}*(1+0.08*t/{cut['dur']:.3f})/2)':eval=frame,"
+                    f"crop={W}:{TOP_H}:'(in_w-{W})/2':'(in_h-{TOP_H})/2',setsar=1,eq=contrast=1.04:saturation=1.08",
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", outp])
         return outp
     txt = re.sub(r"[^A-Za-z0-9 ]", "", cut["q"])[:30]
@@ -415,6 +444,7 @@ def clean(w):
 
 
 CAP_SIZE = 100
+LIBASS_K = 0.644
 SAFE_W = 900          # largura útil da legenda (90 px de margem de cada lado)
 MAX_CAP_CHARS = 18    # grupos curtos: no máximo ~18 letras por vez
 _CAP_FONT = None
@@ -447,12 +477,44 @@ def fit_size(text, size):
     """Diminui a fonte até o texto (com contorno) caber em SAFE_W."""
     f = _cap_font(size)
     if f is not None:
-        w = f.getlength(text) + 2 * 7 + len(text) * 1
+        # o libass desenha a Montserrat ~0,644x da largura que o PIL mede (calibrado comparando os dois)
+        w = (f.getlength(text) + len(text) * 1) * LIBASS_K + 2 * 7
     else:
-        w = len(text) * size * 0.70
+        w = len(text) * size * 0.46
     if w <= SAFE_W:
         return size
     return max(56, int(size * SAFE_W / w))
+
+
+# estilo da legenda: "yellow" (palavra falada em amarelo), "navy_box" ou "red_box" (caixinha atrás da palavra)
+CAP_STYLE = os.getenv("CAP_STYLE") or "yellow"
+CAP_BOX_COLORS = {"navy_box": "&H00602814&", "red_box": "&H002828D6&"}
+
+
+def _txt_w(f, text, fs):
+    if f is None:
+        return len(text) * fs * 0.70
+    return f.getlength(text) + len(text) * 1  # Spacing 1 do estilo
+
+
+def word_box(texts, wi, fs):
+    """Retângulo atrás da palavra wi (linha centralizada em x=540, y=640)."""
+    f = _cap_font(fs)
+    full = " ".join(texts)
+    left = 540 - _txt_w(f, full, fs) / 2
+    pre = " ".join(texts[:wi]) + (" " if wi else "")
+    x0 = left + _txt_w(f, pre, fs)
+    x1 = x0 + _txt_w(f, texts[wi], fs)
+    pad = fs * 0.16
+    return x0 - pad, x1 + pad, 640 - fs * 0.62, 640 + fs * 0.62
+
+
+def rounded_rect(x0, y0, x1, y1, r):
+    x0, y0, x1, y1, r = (int(round(v)) for v in (x0, y0, x1, y1, r))
+    return (f"m {x0 + r} {y0} l {x1 - r} {y0} b {x1} {y0} {x1} {y0} {x1} {y0 + r} "
+            f"l {x1} {y1 - r} b {x1} {y1} {x1} {y1} {x1 - r} {y1} "
+            f"l {x0 + r} {y1} b {x0} {y1} {x0} {y1} {x0} {y1 - r} "
+            f"l {x0} {y0 + r} b {x0} {y0} {x0} {y0} {x0 + r} {y0}")
 
 
 def build_ass(out_words, title, total, credits, path):
@@ -467,6 +529,8 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 Style: Cap,{FONT},{CAP_SIZE},&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,-1,0,0,0,100,100,1,0,1,7,2,5,30,30,0,1
 Style: TitleR,{FONT},84,&H00FFFFFF,&H00FFFFFF,&H002828D6,&H002828D6,-1,0,0,0,100,100,1,0,3,20,0,5,30,30,0,1
 Style: TitleB,{FONT},84,&H00FFFFFF,&H00FFFFFF,&H00A0461A,&H00A0461A,-1,0,0,0,100,100,1,0,3,20,0,5,30,30,0,1
+Style: navy_box,{FONT},{CAP_SIZE},&HFF000000,&HFF000000,&H00602814,&HFF000000,-1,0,0,0,100,100,1,0,3,16,0,5,30,30,0,1
+Style: red_box,{FONT},{CAP_SIZE},&HFF000000,&HFF000000,&H002828D6,&HFF000000,-1,0,0,0,100,100,1,0,3,16,0,5,30,30,0,1
 Style: Box,{FONT},20,&H00000000,&H00000000,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1
 Style: Cred,{FONT},42,&H00FFFFFF,&H00FFFFFF,&H00000000,&H96000000,0,0,0,0,100,100,0,0,1,2,1,2,30,30,28,1
 
@@ -504,8 +568,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             en = g[wi + 1]["start"] if wi + 1 < len(g) else min(nxt_start, g[-1]["end"] + 0.5)
             if en - st < 0.03:
                 continue
-            parts = [(r"{\c&H00D4FF&}" + t + r"{\c&HFFFFFF&}") if k == wi else t for k, t in enumerate(texts)]
             fs = fit_size(" ".join(texts), CAP_SIZE)
+            if CAP_STYLE == "yellow":
+                parts = [(r"{\c&H00D4FF&}" + t + r"{\c&HFFFFFF&}") if k == wi else t for k, t in enumerate(texts)]
+            else:
+                parts = texts
+                # caixa só atrás da palavra falada: mesma linha num estilo de caixa, com as outras palavras invisíveis
+                boxed = [(r"{\3a&H00&}" + t + r"{\3a&HFF&}") if k == wi else t for k, t in enumerate(texts)]
+                ev.append(f"Dialogue: 0,{ass_time(st)},{ass_time(en)},{CAP_STYLE},,0,0,0,,"
+                          + r"{\pos(540,640)\fs" + str(fs) + r"\3a&HFF&}" + " ".join(boxed))
             ev.append(f"Dialogue: 1,{ass_time(st)},{ass_time(en)},Cap,,0,0,0,,"
                       + r"{\pos(540,640)\fs" + str(fs) + "}" + " ".join(parts))
     if credits:
@@ -553,22 +624,35 @@ def edit(src, out, words_json=None, fake_broll=False):
         # baixo: você, enquadrado no rosto
         faces = detect_faces(norm)
         print(f"Rosto detectado em {len(faces)} amostras", flush=True)
+        # "jump cuts": quebra cada trecho em planos de ~2,5-3,5 s (nas pausas entre palavras) e alterna o zoom
+        shots = make_shots(segs, words)
+        print(f"Planos (jump cuts): {len(shots)}", flush=True)
         parts = []
-        for i, s in enumerate(segs):
-            d = s["src_end"] - s["src_start"]
-            cw, ch, x, y = crop_for(faces, s["src_start"], s["src_end"], W, H)
+        for i, sh in enumerate(shots):
+            d = sh["end"] - sh["start"]
+            cw, ch, x, y = crop_for(faces, sh["start"], sh["end"], W, H)
+            lvl = ZOOM_LEVELS[i % len(ZOOM_LEVELS)]
+            # zoom: nível do plano + "soco" rápido no começo + aproximação lenta contínua (a imagem nunca fica parada)
+            z = f"({lvl}+{PUSH}*t/{d:.3f}+{PUNCH}*max(0,1-t/0.22))"
             p = os.path.join(tmp, f"bot{i:03d}.mp4")
-            fade = min(0.02, d / 4)
-            run(["ffmpeg", "-y", "-ss", f"{s['src_start']:.3f}", "-i", norm, "-t", f"{d:.3f}",
-                 "-vf", f"crop={cw}:{ch}:{x}:{y},scale={W}:{BOT_H},setsar=1",
-                 "-af", f"afade=t=in:d={fade},afade=t=out:st={d - fade:.3f}:d={fade}",
-                 "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p",
-                 "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k", p])
+            run(["ffmpeg", "-y", "-ss", f"{sh['start']:.3f}", "-i", norm, "-t", f"{d:.3f}", "-an",
+                 "-vf", f"crop={cw}:{ch}:{x}:{y},scale={W}:{BOT_H},"
+                        f"scale=w='2*trunc({W}*{z}/2)':h='2*trunc({BOT_H}*{z}/2)':eval=frame:flags=bicubic,"
+                        f"crop={W}:{BOT_H}:'(in_w-{W})/2':'(in_h-{BOT_H})*0.35',setsar=1",
+                 "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast", "-crf", "17", "-pix_fmt", "yuv420p", p])
             parts.append(p)
-        bottom = os.path.join(tmp, "bottom.mp4")
+        bottom_v = os.path.join(tmp, "bottom_v.mp4")
         with open(os.path.join(tmp, "b.txt"), "w") as f:
             f.writelines(f"file '{p}'\n" for p in parts)
-        run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", os.path.join(tmp, "b.txt"), "-c", "copy", bottom])
+        run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", os.path.join(tmp, "b.txt"), "-c", "copy", bottom_v])
+        # áudio contínuo (cortado só nas pausas), num passo só: sem estalos entre os planos
+        af = ";".join(f"[0:a]atrim={sg['src_start']:.3f}:{sg['src_end']:.3f},asetpts=PTS-STARTPTS,"
+                      f"afade=t=in:d=0.015,afade=t=out:st={max(0, sg['src_end'] - sg['src_start'] - 0.015):.3f}:d=0.015[a{k}]"
+                      for k, sg in enumerate(segs))
+        af += ";" + "".join(f"[a{k}]" for k in range(len(segs))) + f"concat=n={len(segs)}:v=0:a=1[aout]"
+        bottom = os.path.join(tmp, "bottom.mp4")
+        run(["ffmpeg", "-y", "-i", norm, "-i", bottom_v, "-filter_complex", af, "-map", "1:v", "-map", "[aout]",
+             "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k", "-shortest", bottom])
         total = probe_duration(bottom)
 
         # plano: título + b-rolls

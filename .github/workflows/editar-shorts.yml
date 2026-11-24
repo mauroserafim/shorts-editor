@@ -22,6 +22,8 @@ env:
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
   GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
+  CAP_STYLE: ${{ vars.CAP_STYLE }}
+  SHOW_TITLE: ${{ vars.SHOW_TITLE }}
   WHISPER_MODEL: ${{ vars.WHISPER_MODEL || 'medium' }}
   CAPTION_FONT: Montserrat ExtraBold
 
