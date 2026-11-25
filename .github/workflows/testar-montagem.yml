@@ -1,0 +1,16 @@
+name: Testar montagem
+on:
+  workflow_dispatch: {}
+  push:
+    paths: [".test-compose"]
+jobs:
+  teste:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg fonts-montserrat && pip install -q Pillow numpy
+      - run: bash tools/test_compose.sh
