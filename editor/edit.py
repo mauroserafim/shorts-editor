@@ -80,8 +80,17 @@ TITLE_DUR = 3.0
 SHOW_TITLE = (os.getenv("SHOW_TITLE") or "1") == "1"  # sem título: legenda já começa no primeiro segundo
 
 
-def run(cmd):
-    r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+def run(cmd, timeout=None):
+    import time
+    t0 = time.time()
+    if timeout is None and cmd and cmd[0] == "ffmpeg":
+        timeout = int(os.getenv("FFMPEG_TIMEOUT", "1500"))  # nenhum passo deve levar 25 min: evita travar a execução
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"travou (> {timeout}s): " + " ".join(cmd[:8]))
+    if time.time() - t0 > 20:
+        print(f"  [{time.time() - t0:.0f}s] " + " ".join(cmd[:12])[:200], flush=True)
     if r.returncode != 0:
         sys.stderr.write(r.stderr[-3000:])
         raise RuntimeError("falhou: " + " ".join(cmd[:6]))
