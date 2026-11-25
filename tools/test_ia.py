@@ -7,7 +7,8 @@ if not e.GROQ_KEY:
     raise SystemExit("Falta o secret GROQ_API_KEY")
 ms = requests.get("https://api.groq.com/openai/v1/models", headers={"Authorization": f"Bearer {e.GROQ_KEY}"}, timeout=30).json()
 print("Modelos:", sorted(m["id"] for m in ms.get("data", [])))
-for m in e.GROQ_TEXT_MODELS:
+print("Texto:", e.groq_models("text"), "Visão:", e.groq_models("vision"))
+for m in e.groq_models("text"):
     try:
         print("TEXTO", m, "->", e.parse_json(e.ask_groq(m, 'Responda só JSON {"title": ["GASOLINA NOS EUA"]}')))
     except Exception as ex:

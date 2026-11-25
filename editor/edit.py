@@ -42,10 +42,33 @@ _GEMINI_OK = []
 _GEMINI_DEAD = set()   # modelos que já deram "sem cota" nesta execução: não insiste (economiza tempo)
 # Reserva grátis: Groq (sem cartão). Só entra se o Gemini falhar. Chave no secret GROQ_API_KEY.
 GROQ_KEY = os.getenv("GROQ_API_KEY", "").strip()
-GROQ_TEXT_MODELS = (os.getenv("GROQ_TEXT_MODELS") or
-                    "qwen/qwen3.6-27b,llama-3.3-70b-versatile,meta-llama/llama-4-scout-17b-16e-instruct").split(",")
-GROQ_VISION_MODELS = (os.getenv("GROQ_VISION_MODELS") or
-                      "qwen/qwen3.6-27b,meta-llama/llama-4-scout-17b-16e-instruct").split(",")
+_GROQ_MODELS = None
+
+
+def groq_models(kind):
+    """Lista os modelos da Groq disponíveis agora (eles mudam de nome) na ordem de preferência.
+    kind="text" ou "vision". Dá pra forçar com as variáveis GROQ_TEXT_MODELS / GROQ_VISION_MODELS."""
+    global _GROQ_MODELS
+    env = os.getenv("GROQ_TEXT_MODELS" if kind == "text" else "GROQ_VISION_MODELS")
+    if env:
+        return env.split(",")
+    if _GROQ_MODELS is None:
+        try:
+            r = requests.get("https://api.groq.com/openai/v1/models",
+                             headers={"Authorization": f"Bearer {GROQ_KEY}"}, timeout=30)
+            _GROQ_MODELS = [m["id"] for m in r.json().get("data", [])]
+        except Exception:
+            _GROQ_MODELS = []
+    skip = ("guard", "whisper", "orpheus", "tts", "allam", "safeguard")
+    ids = [m for m in _GROQ_MODELS if not any(x in m.lower() for x in skip)]
+    vision_tags = ("qwen", "llama-4", "vision", "scout", "maverick", "gemma-3", "kimi")
+    if kind == "vision":
+        prefs = ("qwen", "llama-4-maverick", "llama-4-scout", "llama-4", "vision", "gemma")
+        ids = [m for m in ids if any(t in m.lower() for t in vision_tags)]
+    else:
+        prefs = ("qwen", "gpt-oss-120b", "llama-4-maverick", "llama-3.3-70b", "kimi", "gpt-oss-20b")
+    rank = lambda m: next((i for i, t in enumerate(prefs) if t in m.lower()), len(prefs))
+    return sorted(ids, key=rank)[:3]
 FONT = os.getenv("CAPTION_FONT", "Montserrat ExtraBold")
 FONTS_DIR = os.getenv("FONTS_DIR", "")
 
@@ -225,7 +248,7 @@ Regras:
     if GEMINI_KEY:
         attempts += [("gemini", m) for m in GEMINI_MODELS if m not in _GEMINI_DEAD]
     if GROQ_KEY:
-        attempts += [("groq", m) for m in GROQ_TEXT_MODELS]
+        attempts += [("groq", m) for m in groq_models("text")]
     for provider, model in attempts:
         try:
             content = ask_gemini(model, prompt) if provider == "gemini" else ask_groq(model, prompt)
@@ -480,7 +503,7 @@ def vision_pick_groq(batch, out_words):
                                                     f"opções 0 a {len(c['cands'][:4]) - 1}:"})
             content.append({"type": "image_url", "image_url": {
                 "url": "data:image/jpeg;base64," + base64.b64encode(_contact_sheet(c["cands"])).decode()}})
-        for model in GROQ_VISION_MODELS:
+        for model in groq_models("vision"):
             try:
                 data = parse_json(ask_groq(model, content))
                 for p in data.get("picks", []):
