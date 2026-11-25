@@ -843,7 +843,10 @@ def edit(src, out, words_json=None, fake_broll=False):
         build_ass(out_words, title, total, ["Vídeos: Pexels"], ass)
         ass_esc = ass.replace("\\", "/").replace(":", "\\:")
         sub = f"subtitles='{ass_esc}'" + (f":fontsdir='{FONTS_DIR}'" if FONTS_DIR else "")
-        inputs, fc = ["-i", bottom, "-i", top], f"[1:v]tpad=stop_mode=clone:stop_duration=5[t];[t][0:v]vstack=inputs=2:shortest=1,{sub}[base]"
+        # setpts por número do quadro: os jump cuts emendados (-c copy) podem ter tempos bagunçados, o que no
+        # ffmpeg 8 fazia a montagem descartar quadros e travar; todos os planos são 30 fps constantes
+        inputs, fc = ["-i", bottom, "-i", top], (f"[0:v]setpts=N/({FPS}*TB)[bv];[1:v]setpts=N/({FPS}*TB),"
+                                                 f"tpad=stop_mode=clone:stop_duration=5[t];[t][bv]vstack=inputs=2:shortest=1,{sub}[base]")
         if title and SHOW_TITLE:
             from editor.title_card import render_paper_title
             tpng = os.path.join(tmp, "title.png")
