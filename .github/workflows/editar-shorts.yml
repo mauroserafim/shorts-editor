@@ -4,6 +4,8 @@ on:
   schedule:
     - cron: "*/15 * * * *"   # confere a pasta a cada 15 min
   workflow_dispatch: {}       # botão "Run workflow" para rodar na hora
+  push:
+    paths: [".trigger"]       # o Claude dispara a edição na hora mudando este arquivo
 
 permissions:
   contents: read
