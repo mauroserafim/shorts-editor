@@ -308,10 +308,11 @@ def ask_gemini(model, prompt):
         if r.status_code not in (429, 500, 503) or wait == 90 or "quota" in r.text.lower():
             break  # sem cota não adianta esperar: vai pro próximo modelo
     if r is None:
+        _GEMINI_DEAD.add(model)
         raise RuntimeError("timeout")
     if r.status_code != 200:
-        if r.status_code == 429 and "quota" in r.text.lower():
-            _GEMINI_DEAD.add(model)
+        if r.status_code in (429, 500, 503):
+            _GEMINI_DEAD.add(model)  # sem cota ou ocupado mesmo depois de esperar: pula nesta execução (vai pra Groq)
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     parts = r.json()["candidates"][0]["content"]["parts"]
     return "".join(p.get("text", "") for p in parts if not p.get("thought"))
