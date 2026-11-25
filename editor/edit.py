@@ -39,7 +39,13 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
 # vários modelos: se um estiver ocupado/sem cota, tenta o próximo (os "lite" têm cota grátis maior)
 GEMINI_MODELS = (os.getenv("GEMINI_MODELS") or "gemini-3.8-flash,gemini-flash-lite-latest,gemini-flash-latest").split(",")
 _GEMINI_OK = []
-LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-4.1-mini")
+_GEMINI_DEAD = set()   # modelos que já deram "sem cota" nesta execução: não insiste (economiza tempo)
+# Reserva grátis: Groq (sem cartão). Só entra se o Gemini falhar. Chave no secret GROQ_API_KEY.
+GROQ_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_TEXT_MODELS = (os.getenv("GROQ_TEXT_MODELS") or
+                    "qwen/qwen3.6-27b,llama-3.3-70b-versatile,meta-llama/llama-4-scout-17b-16e-instruct").split(",")
+GROQ_VISION_MODELS = (os.getenv("GROQ_VISION_MODELS") or
+                      "qwen/qwen3.6-27b,meta-llama/llama-4-scout-17b-16e-instruct").split(",")
 FONT = os.getenv("CAPTION_FONT", "Montserrat ExtraBold")
 FONTS_DIR = os.getenv("FONTS_DIR", "")
 
@@ -217,12 +223,12 @@ Regras:
     plan, last_err = None, None
     attempts = []
     if GEMINI_KEY:
-        attempts += [("gemini", m) for m in GEMINI_MODELS]
-    if GH_TOKEN:
-        attempts += [("github", m) for m in (LLM_MODEL, "openai/gpt-4o-mini")]
+        attempts += [("gemini", m) for m in GEMINI_MODELS if m not in _GEMINI_DEAD]
+    if GROQ_KEY:
+        attempts += [("groq", m) for m in GROQ_TEXT_MODELS]
     for provider, model in attempts:
         try:
-            content = ask_gemini(model, prompt) if provider == "gemini" else ask_github(model, prompt)
+            content = ask_gemini(model, prompt) if provider == "gemini" else ask_groq(model, prompt)
             plan = parse_json(content)
             if not plan.get("cuts"):
                 raise RuntimeError(f"sem cortes: {content[:200]!r}")
@@ -281,20 +287,37 @@ def ask_gemini(model, prompt):
     if r is None:
         raise RuntimeError("timeout")
     if r.status_code != 200:
+        if r.status_code == 429 and "quota" in r.text.lower():
+            _GEMINI_DEAD.add(model)
         raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     parts = r.json()["candidates"][0]["content"]["parts"]
     return "".join(p.get("text", "") for p in parts if not p.get("thought"))
 
 
-def ask_github(model, prompt):
-    r = requests.post("https://models.github.ai/inference/chat/completions",
-                      headers={"Authorization": f"Bearer {GH_TOKEN}", "Content-Type": "application/json",
-                               "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"},
-                      json={"model": model, "temperature": 0.4,
-                            "messages": [{"role": "user", "content": prompt}]}, timeout=120)
-    if r.status_code != 200 or "json" not in r.headers.get("content-type", ""):
-        raise RuntimeError(f"HTTP {r.status_code} {r.headers.get('content-type')}: {r.text[:200]!r}")
-    return r.json()["choices"][0]["message"]["content"] or ""
+def ask_groq(model, content, json_mode=True):
+    """Groq (API no formato OpenAI). content = texto ou lista de partes (texto + imagens)."""
+    import time
+    body = {"model": model, "temperature": 0.4, "max_completion_tokens": 8192,
+            "messages": [{"role": "user", "content": content}]}
+    if json_mode:
+        body["response_format"] = {"type": "json_object"}
+    if "qwen" in model:
+        body["reasoning_effort"] = "none"  # sem "pensar": resposta direta
+    r = None
+    for wait in (0, 20, 60):
+        time.sleep(wait)
+        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                          headers={"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"},
+                          json=body, timeout=180)
+        if r.status_code == 400 and ("reasoning" in r.text or "response_format" in r.text):
+            body.pop("reasoning_effort", None) if "reasoning" in r.text else body.pop("response_format", None)
+            continue
+        if r.status_code not in (429, 500, 503):
+            break
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+    txt = r.json()["choices"][0]["message"].get("content") or ""
+    return re.sub(r"<think>.*?</think>", "", txt, flags=re.S)
 
 
 STOP = set("""a o as os um uma de da do das dos em no na nos nas num numa por pra para pro com que se e é ou
@@ -371,7 +394,7 @@ def vision_pick(cuts, out_words):
     """Gemini olha as miniaturas e escolhe o melhor b-roll de cada trecho (como um editor)."""
     import base64
     picks = {}
-    if not GEMINI_KEY:
+    if not (GEMINI_KEY or GROQ_KEY):
         return picks
     for start in range(0, len(cuts), 16):
         batch = list(enumerate(cuts))[start:start + 16]
@@ -392,15 +415,80 @@ def vision_pick(cuts, out_words):
                     continue
                 parts.append({"text": f"opção {j}:"})
                 parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.b64encode(img).decode()}})
-        for model in dict.fromkeys(_GEMINI_OK + GEMINI_MODELS):
+        done = False
+        for model in (dict.fromkeys(_GEMINI_OK + GEMINI_MODELS) if GEMINI_KEY else []):
+            if model in _GEMINI_DEAD:
+                continue
             try:
                 txt = ask_gemini(model, parts)
                 data = parse_json(txt)
                 for p in data.get("picks", []):
                     picks[int(p["corte"])] = int(p["opcao"])
+                done = True
                 break
             except Exception as ex:
                 print(f"  escolha visual {model} falhou ({str(ex)[:120]})", flush=True)
+        if not done and GROQ_KEY:
+            picks.update(vision_pick_groq(batch, out_words))
+    return picks
+
+
+def _contact_sheet(cands):
+    """Junta as miniaturas de um corte numa imagem só (opções 0..3 numeradas) — a Groq aceita poucas imagens por pedido."""
+    import io
+    from PIL import ImageDraw, ImageFont
+    cw, chh = 480, 270
+    sheet = Image.new("RGB", (cw * 2, chh * 2), (0, 0, 0))
+    d = ImageDraw.Draw(sheet)
+    try:
+        f = ImageFont.truetype(os.path.join(os.path.dirname(__file__), "fonts", "Anton-Regular.ttf"), 54)
+    except Exception:
+        f = ImageFont.load_default()
+    for j, cand in enumerate(cands[:4]):
+        try:
+            url = cand["thumb"] + ("&" if "?" in cand["thumb"] else "?") + "auto=compress&cs=tinysrgb&w=480"
+            im = Image.open(io.BytesIO(requests.get(url, timeout=20).content)).convert("RGB")
+        except Exception:
+            continue
+        sc = max(cw / im.width, chh / im.height)
+        im = im.resize((max(cw, int(im.width * sc)), max(chh, int(im.height * sc))))
+        im = im.crop(((im.width - cw) // 2, (im.height - chh) // 2, (im.width - cw) // 2 + cw, (im.height - chh) // 2 + chh))
+        x, y = (j % 2) * cw, (j // 2) * chh
+        sheet.paste(im, (x, y))
+        d.rectangle([x, y, x + 62, y + 70], fill=(200, 16, 46))
+        d.text((x + 16, y + 2), str(j), font=f, fill=(255, 255, 255))
+    buf = io.BytesIO()
+    sheet.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
+
+
+def vision_pick_groq(batch, out_words):
+    """Reserva: a Groq vê as miniaturas (uma imagem por corte, 4 opções numeradas) e escolhe."""
+    import base64
+    picks = {}
+    items = [(i, c) for i, c in batch if c.get("cands")]
+    for k in range(0, len(items), 5):  # até 5 imagens por pedido
+        group = items[k:k + 5]
+        content = [{"type": "text", "text":
+                    "Você é editor de Shorts virais. Cada imagem mostra as opções de b-roll (0 a 3, número no canto) "
+                    "de um CORTE. Para cada corte, escolha a opção que melhor ilustra a fala, com melhor qualidade "
+                    "visual (nítida, bonita, cinematográfica, sem texto/marca d'água, sem parecer genérica). "
+                    'Responda SÓ JSON: {"picks": [{"corte": N, "opcao": M}, ...]}'}]
+        for i, c in group:
+            fala = " ".join(w["word"] for w in out_words if c["t"] - 0.3 <= w["start"] < c["t"] + c["dur"])
+            content.append({"type": "text", "text": f"CORTE {i} — fala: \"{fala}\" — ideia: {c['q']} — "
+                                                    f"opções 0 a {len(c['cands'][:4]) - 1}:"})
+            content.append({"type": "image_url", "image_url": {
+                "url": "data:image/jpeg;base64," + base64.b64encode(_contact_sheet(c["cands"])).decode()}})
+        for model in GROQ_VISION_MODELS:
+            try:
+                data = parse_json(ask_groq(model, content))
+                for p in data.get("picks", []):
+                    picks[int(p["corte"])] = int(p["opcao"])
+                print(f"  escolha visual ok (groq {model})", flush=True)
+                break
+            except Exception as ex:
+                print(f"  escolha visual groq {model} falhou ({str(ex)[:120]})", flush=True)
     return picks
 
 
@@ -658,7 +746,7 @@ def edit(src, out, words_json=None, fake_broll=False):
 
         # plano: título + b-rolls
         title, cuts, plan_src = None, None, "ia"
-        if GEMINI_KEY or GH_TOKEN:
+        if GEMINI_KEY or GROQ_KEY:
             try:
                 title, cuts = llm_plan(out_words, total)
             except Exception as ex:
@@ -666,7 +754,7 @@ def edit(src, out, words_json=None, fake_broll=False):
         if not cuts:
             if os.getenv("ALLOW_SIMPLE_PLAN") != "1":
                 # sem IA o b-roll fica ruim: melhor adiar e tentar de novo na próxima execução
-                raise RuntimeError("IA indisponível agora (Gemini ocupado ou sem cota) — vídeo adiado")
+                raise RuntimeError("IA indisponível agora (Gemini e Groq ocupados ou sem cota) — vídeo adiado")
             title, cuts = fallback_plan(out_words, total)
             plan_src = "simples"
         cuts = normalize_cuts(cuts, total)

@@ -1,19 +1,18 @@
-import base64, os, requests
-T = os.environ["GITHUB_TOKEN"]
-img = base64.b64encode(requests.get("https://images.pexels.com/photos/1108099/pexels-photo-1108099.jpeg?auto=compress&cs=tinysrgb&w=360", timeout=30).content).decode()
-urls = ["https://models.github.ai/inference/chat/completions", "https://models.inference.ai.azure.com/chat/completions"]
-hdrs = {"gh": {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}, "json": {"Accept": "application/json"}, "none": {}}
-for url in urls:
-    for hn, h in hdrs.items():
-        for model in ("openai/gpt-4.1-mini", "gpt-4.1-mini"):
-            for kind in ("text", "image"):
-                content = "Responda só JSON {\"ok\": true}" if kind == "text" else [
-                    {"type": "text", "text": "Que animal é? Responda só JSON {\"animal\": \"...\"}"},
-                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + img, "detail": "low"}}]
-                try:
-                    r = requests.post(url, headers={"Authorization": f"Bearer {T}", "Content-Type": "application/json", **h},
-                                      json={"model": model, "messages": [{"role": "user", "content": content}]}, timeout=60)
-                    body = r.text[:160].replace("\n", " ")
-                    print(f"{url.split('/')[2]:32} {hn:5} {model:20} {kind:5} -> {r.status_code} {r.headers.get('content-type','')[:30]} | {body}")
-                except Exception as ex:
-                    print(f"{url} {hn} {model} {kind} EXC {ex}")
+"""Testa a reserva Groq (texto + visão) usando o mesmo código do editor."""
+import os
+import requests
+import editor.edit as e
+
+if not e.GROQ_KEY:
+    raise SystemExit("Falta o secret GROQ_API_KEY")
+ms = requests.get("https://api.groq.com/openai/v1/models", headers={"Authorization": f"Bearer {e.GROQ_KEY}"}, timeout=30).json()
+print("Modelos:", sorted(m["id"] for m in ms.get("data", [])))
+for m in e.GROQ_TEXT_MODELS:
+    try:
+        print("TEXTO", m, "->", e.parse_json(e.ask_groq(m, 'Responda só JSON {"title": ["GASOLINA NOS EUA"]}')))
+    except Exception as ex:
+        print("TEXTO", m, "FALHOU", str(ex)[:200])
+cands = [{"thumb": f"https://images.pexels.com/photos/{i}/pexels-photo-{i}.jpeg"} for i in (1108099, 210019, 466685, 1640777)]
+cut = {"t": 0.0, "dur": 3.0, "q": "dog playing in park", "cands": cands}
+words = [{"word": w, "start": 0.5} for w in "meu cachorro adora brincar no parque".split()]
+print("VISÃO ->", e.vision_pick_groq([(0, cut)], words), "(esperado: opção 0 = cachorro)")
