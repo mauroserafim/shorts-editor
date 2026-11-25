@@ -106,6 +106,38 @@ def run(cmd, timeout=None):
     return out
 
 
+def diagnose_compose(inputs, fc, sub, tmp):
+    """Montagem travou: testa 10 s de cada variação para achar o filtro lento (aparece no log)."""
+    import time
+    for f in ("bottom.mp4", "top.mp4"):
+        try:
+            print(f"DIAG {f}: " + run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                       "stream=width,height,r_frame_rate,avg_frame_rate,nb_frames,pix_fmt:format=duration",
+                                       "-of", "compact", os.path.join(tmp, f)]).replace("\n", " "), flush=True)
+        except Exception as ex:
+            print(f"DIAG {f}: {ex}", flush=True)
+    ass = os.path.join(tmp, "caps.ass")
+    if os.path.exists(ass):
+        txt = open(ass, encoding="utf-8").read()
+        print(f"DIAG ass: {len(txt)} bytes, {txt.count('Dialogue:')} linhas; estilos: "
+              + " | ".join(l[:120] for l in txt.splitlines() if l.startswith("Style:")), flush=True)
+    base_in = inputs[:4]
+    variants = {
+        "completo": (inputs, fc),
+        "sem_titulo": (base_in, fc.split(";[2:v]")[0] + ";[base]format=yuv420p[v]"),
+        "sem_legenda": (inputs, fc.replace("," + sub, "")),
+        "sem_nada": (base_in, fc.split(";[2:v]")[0].replace("," + sub, "") + ";[base]format=yuv420p[v]"),
+    }
+    for name, (inp, graph) in variants.items():
+        t0 = time.time()
+        try:
+            run(["ffmpeg", "-y", *inp, "-filter_complex", graph, "-map", "[v]", "-t", "10", "-c:v", "libx264",
+                 "-preset", "medium", "-crf", "19", "-r", str(FPS), os.path.join(tmp, f"diag_{name}.mp4")], timeout=240)
+            print(f"DIAG {name}: 10 s de vídeo em {time.time() - t0:.0f}s", flush=True)
+        except Exception as ex:
+            print(f"DIAG {name}: FALHOU/TRAVOU em {time.time() - t0:.0f}s ({str(ex)[:80]})", flush=True)
+
+
 def probe_duration(path):
     return float(run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
                       "-of", "default=nk=1:nw=1", path]).strip())
@@ -866,10 +898,15 @@ def edit(src, out, words_json=None, fake_broll=False):
         else:
             last = "base"
         fc += f";[{last}]format=yuv420p[v]"
-        run(["ffmpeg", "-y", *inputs, "-filter_complex", fc,
-             "-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-r", str(FPS),
-             "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
-             "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out])
+        enc = ["-map", "[v]", "-map", "0:a", "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-r", str(FPS),
+               "-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709",
+               "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart"]
+        try:
+            run(["ffmpeg", "-y", *inputs, "-filter_complex", fc, *enc, out], timeout=int(os.getenv("COMPOSE_TIMEOUT", "480")))
+        except RuntimeError as ex:
+            if "travou" in str(ex):
+                diagnose_compose(inputs, fc, sub, tmp)
+            raise
 
         return {"duracao_original": round(duration, 1), "duracao_final": round(total, 1),
                 "trechos": len(segs), "titulo": title, "plano": plan_src,
