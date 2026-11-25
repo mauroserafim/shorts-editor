@@ -33,15 +33,15 @@ TOP_H = 640
 BOT_H = H - TOP_H
 
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")
-PEXELS_KEY = os.getenv("PEXELS_API_KEY", "")
+PEXELS_KEY = os.getenv("PEXELS_API_KEY", "").strip()
 GH_TOKEN = os.getenv("GITHUB_TOKEN", "")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 # vários modelos: se um estiver ocupado/sem cota, tenta o próximo (os "lite" têm cota grátis maior)
 GEMINI_MODELS = (os.getenv("GEMINI_MODELS") or "gemini-3.8-flash,gemini-flash-lite-latest,gemini-flash-latest").split(",")
 _GEMINI_OK = []
 _GEMINI_DEAD = set()   # modelos que já deram "sem cota" nesta execução: não insiste (economiza tempo)
 # Reserva grátis: Groq (sem cartão). Só entra se o Gemini falhar. Chave no secret GROQ_API_KEY.
-GROQ_KEY = os.getenv("GROQ_API_KEY", "")
+GROQ_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_TEXT_MODELS = (os.getenv("GROQ_TEXT_MODELS") or
                     "qwen/qwen3.6-27b,llama-3.3-70b-versatile,meta-llama/llama-4-scout-17b-16e-instruct").split(",")
 GROQ_VISION_MODELS = (os.getenv("GROQ_VISION_MODELS") or
