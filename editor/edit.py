@@ -39,7 +39,8 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 # vários modelos: se um estiver ocupado/sem cota, tenta o próximo (os "lite" têm cota grátis maior)
 GEMINI_MODELS = (os.getenv("GEMINI_MODELS") or "gemini-3.8-flash,gemini-flash-lite-latest,gemini-flash-latest").split(",")
 _GEMINI_OK = []
-_GEMINI_DEAD = set()   # modelos que já deram "sem cota" nesta execução: não insiste (economiza tempo)
+_GEMINI_DEAD = set()
+GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "120"))  # segundos por pedido; a Groq é a reserva   # modelos que já deram "sem cota" nesta execução: não insiste (economiza tempo)
 # Reserva grátis: Groq (sem cartão). Só entra se o Gemini falhar. Chave no secret GROQ_API_KEY.
 GROQ_KEY = os.getenv("GROQ_API_KEY", "").strip()
 _GROQ_MODELS = None
@@ -290,7 +291,7 @@ def ask_gemini(model, prompt):
     gen = {"temperature": 0.4, "responseMimeType": "application/json", "maxOutputTokens": 8192,
            "thinkingConfig": {"thinkingLevel": "low"}}  # sem "pensar" muito: resposta rápida
     r = None
-    for wait in (0, 30, 90):  # 503/429/timeout = Gemini ocupado: espera e tenta de novo
+    for wait in (0, 30):  # 503/429/timeout = Gemini ocupado: tenta mais uma vez; depois vai pra Groq
         time.sleep(wait)
         try:
             r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
@@ -298,14 +299,14 @@ def ask_gemini(model, prompt):
                               json={"contents": [{"role": "user", "parts": prompt if isinstance(prompt, list)
                                                                            else [{"text": prompt}]}],
                                     "generationConfig": gen},
-                              timeout=300)
+                              timeout=GEMINI_TIMEOUT)
         except requests.exceptions.Timeout:
             print(f"  Gemini {model}: demorou demais, tentando de novo", flush=True)
             continue
         if r.status_code == 400 and "thinking" in r.text.lower():
             gen.pop("thinkingConfig", None)
             continue
-        if r.status_code not in (429, 500, 503) or wait == 90 or "quota" in r.text.lower():
+        if r.status_code not in (429, 500, 503) or wait == 30 or "quota" in r.text.lower():
             break  # sem cota não adianta esperar: vai pro próximo modelo
     if r is None:
         _GEMINI_DEAD.add(model)
