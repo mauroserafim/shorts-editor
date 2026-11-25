@@ -84,17 +84,26 @@ def run(cmd, timeout=None):
     import time
     t0 = time.time()
     if timeout is None and cmd and cmd[0] == "ffmpeg":
-        timeout = int(os.getenv("FFMPEG_TIMEOUT", "1500"))  # nenhum passo deve levar 25 min: evita travar a execução
-    try:
-        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"travou (> {timeout}s): " + " ".join(cmd[:8]))
+        timeout = int(os.getenv("FFMPEG_TIMEOUT", "900"))  # nenhum passo deve levar 15 min: evita travar a execução
+    with tempfile.TemporaryFile("w+") as errf:
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=errf, text=True)
+        try:
+            out, _ = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.communicate()
+            errf.seek(0)
+            tail = errf.read()[-1500:].replace("\r", "\n")
+            sys.stderr.write(tail + "\n")
+            raise RuntimeError(f"travou (> {timeout}s): " + " ".join(cmd[:8]))
+        errf.seek(0)
+        err = errf.read()
     if time.time() - t0 > 20:
         print(f"  [{time.time() - t0:.0f}s] " + " ".join(cmd[:12])[:200], flush=True)
-    if r.returncode != 0:
-        sys.stderr.write(r.stderr[-3000:])
+    if p.returncode != 0:
+        sys.stderr.write(err[-3000:])
         raise RuntimeError("falhou: " + " ".join(cmd[:6]))
-    return r.stdout
+    return out
 
 
 def probe_duration(path):

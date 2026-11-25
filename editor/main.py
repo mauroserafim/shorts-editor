@@ -69,6 +69,8 @@ def main():
         except Exception as ex:
             print(f"ERRO em {name}: {ex}", flush=True)
             report.append(f"- ❌ **{name}**: {ex}")
+            if "travou" in str(ex):
+                break  # ffmpeg travou: para aqui (os outros travariam igual) e deixa o erro no log
             continue
         rclone("copyto", out, f"{REMOTE}{OUT_DIR}/{out_name(name)}")
         line = (f"- ✅ **{out_name(name)}** — {s['duracao_original']}s → {s['duracao_final']}s · "
