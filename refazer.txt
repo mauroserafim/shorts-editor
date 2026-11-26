@@ -1,0 +1,3 @@
+# Vídeos para refazer: "nome do bruto | data UTC". O robô refaz se o Short atual for mais antigo que a data.
+lv_0_20261125110654.mp4 | 2026-11-26T04:50:00
+lv_0_20261125111247.mp4 | 2026-11-26T04:50:00

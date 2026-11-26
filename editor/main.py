@@ -35,10 +35,27 @@ def out_name(name):
     return os.path.splitext(name)[0] + " - SHORT.mp4"
 
 
+def redo_list():
+    """refazer.txt (no repo): linhas "nome do bruto | data UTC". Refaz se o Short atual for mais antigo que a data."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "refazer.txt")
+    out = {}
+    if os.path.exists(path):
+        for line in open(path, encoding="utf-8"):
+            if "|" in line and not line.lstrip().startswith("#"):
+                name, when = (x.strip() for x in line.split("|", 1))
+                out[name] = when
+    return out
+
+
 def pending():
     vids = [f for f in lsjson(REMOTE)
             if f.get("MimeType", "").startswith("video/") or f["Name"].lower().endswith(VIDEO_EXT)]
-    done = {f["Name"] for f in lsjson(REMOTE + OUT_DIR)}
+    done = {f["Name"]: f.get("ModTime", "") for f in lsjson(REMOTE + OUT_DIR)}
+    redo = redo_list()
+    for name, when in redo.items():
+        short = out_name(name)
+        if short in done and done[short][:19] < when[:19]:
+            done.pop(short)  # Short antigo (com defeito): entra de novo na fila
     todo = [f for f in vids if out_name(f["Name"]) not in done]
     todo.sort(key=lambda f: f.get("ModTime", ""))
     return todo
@@ -72,7 +89,12 @@ def main():
             if "travou" in str(ex):
                 break  # ffmpeg travou: para aqui (os outros travariam igual) e deixa o erro no log
             continue
-        rclone("copyto", out, f"{REMOTE}{OUT_DIR}/{out_name(name)}")
+        target = f"{REMOTE}{OUT_DIR}/{out_name(name)}"
+        try:
+            rclone("deletefile", target)  # refazendo: o Short antigo vai para a lixeira do Drive
+        except RuntimeError:
+            pass
+        rclone("copyto", out, target)
         line = (f"- ✅ **{out_name(name)}** — {s['duracao_original']}s → {s['duracao_final']}s · "
                 f"{len(s['brolls'])} b-rolls · título: {' / '.join(s['titulo']).replace('*', '')} · plano: {s['plano']}")
         print(line, flush=True)
