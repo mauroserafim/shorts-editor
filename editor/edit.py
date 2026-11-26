@@ -431,13 +431,33 @@ def normalize_cuts(cuts, total):
 
 
 # ------------------------------------------------------------ 5. b-roll Pexels (paisagem, topo)
+_PEXELS_CACHE = {}
+PEXELS_FAILS = {"n": 0}
+
+
 def pexels_search(q, pt=False):
+    import time
+    key = (q.lower().strip(), pt)
+    if key in _PEXELS_CACHE:
+        return _PEXELS_CACHE[key]
     params = {"query": q, "orientation": "landscape", "per_page": 15}
     if pt:
         params["locale"] = "pt-BR"
-    r = requests.get("https://api.pexels.com/videos/search", headers={"Authorization": PEXELS_KEY},
-                     params=params, timeout=30)
-    if r.status_code != 200:
+    r = None
+    for wait in (0, 15, 45):  # 429 = limite por hora do Pexels: espera um pouco e tenta de novo
+        time.sleep(wait)
+        try:
+            r = requests.get("https://api.pexels.com/videos/search", headers={"Authorization": PEXELS_KEY},
+                             params=params, timeout=30)
+        except Exception:
+            r = None
+            continue
+        if r.status_code not in (429, 500, 502, 503):
+            break
+    if r is None or r.status_code != 200:
+        PEXELS_FAILS["n"] += 1
+        print(f"  Pexels '{q}': HTTP {getattr(r, 'status_code', 'erro')} "
+              f"(restam {getattr(r, 'headers', {}).get('X-Ratelimit-Remaining', '?')})", flush=True)
         return []
     out = []
     for rank, v in enumerate(r.json().get("videos", [])):
@@ -449,6 +469,7 @@ def pexels_search(q, pt=False):
         f = min(hd, key=lambda f: f["width"]) if hd else max(files, key=lambda f: f["width"])
         out.append({"id": v["id"], "link": f["link"], "w": f["width"], "vdur": v.get("duration", 0),
                     "thumb": v.get("image", ""), "rank": rank, "q": q})
+    _PEXELS_CACHE[key] = out
     return out
 
 
@@ -579,6 +600,8 @@ def make_top_clip(cut, tmp, i, fake=False):
                     f.write(ch)
         vdur = cut.get("vdur", 0)
         ss = min(max(0.5, vdur * 0.25), vdur - cut["dur"] - 0.3) if vdur > cut["dur"] + 1.5 else 0.3
+        if cut.get("shift") and vdur > cut["dur"] + 1.5:  # b-roll reaproveitado: outro trecho do mesmo vídeo
+            ss = (ss + cut["shift"]) % max(0.5, vdur - cut["dur"] - 0.3)
         run(["ffmpeg", "-y", "-ss", f"{ss:.2f}", "-stream_loop", "-1", "-i", raw, "-frames:v", str(frames), "-an",
              "-vf", f"scale={W}:{TOP_H}:force_original_aspect_ratio=increase:flags=lanczos,crop={W}:{TOP_H},fps={FPS},"
                     # Ken Burns: aproximação lenta no b-roll
@@ -836,7 +859,9 @@ def edit(src, out, words_json=None, fake_broll=False):
         print(f"Título: {' / '.join(title)}", flush=True)
 
         # topo: b-rolls — candidatos do Pexels + escolha visual pelo Gemini
-        fake = fake_broll or not PEXELS_KEY
+        if not fake_broll and not PEXELS_KEY:
+            raise RuntimeError("Falta PEXELS_API_KEY")
+        fake = fake_broll
         if not fake:
             for c in cuts:
                 try:
@@ -859,12 +884,46 @@ def edit(src, out, words_json=None, fake_broll=False):
                         c.update(link=cand["link"], vdur=cand["vdur"], chosen=cand["q"], w=cand["w"])
                         break
         tops = []
+        if not fake:
+            # nunca usar a tela de teste num vídeo de verdade: tenta outras opções e, se faltar pouco,
+            # reaproveita outro trecho de um b-roll vizinho; se faltar muito (Pexels fora/sem cota), adia o vídeo
+            def fill_from_neighbor(i):
+                for k in sorted(range(len(cuts)), key=lambda k: abs(k - i)):
+                    if k != i and cuts[k].get("link") and not cuts[k].get("reused"):
+                        n = cuts[k]
+                        cuts[i].update(link=n["link"], vdur=n["vdur"], chosen=n.get("chosen", n["q"]) + " (reuso)",
+                                       w=n.get("w"), shift=3.0 + abs(k - i), reused=True)
+                        return True
+                return False
+            missing = [i for i, c in enumerate(cuts) if not c.get("link")]
+            if len(missing) > max(2, len(cuts) // 5):
+                raise RuntimeError(f"Pexels indisponível/sem cota ({len(missing)}/{len(cuts)} trechos sem b-roll) "
+                                   "— vídeo adiado")
+            for i in missing:
+                fill_from_neighbor(i)
         for i, c in enumerate(cuts):
-            try:
-                tops.append(make_top_clip(c, tmp, i, fake=fake))
-            except Exception as ex:
-                print(f"  b-roll '{c['q']}' falhou: {ex}", flush=True)
+            if fake:
                 tops.append(make_top_clip(c, tmp, i, fake=True))
+            else:
+                clip = None
+                tried = set()
+                for attempt in range(4):
+                    try:
+                        clip = make_top_clip(c, tmp, i)
+                        break
+                    except Exception as ex:
+                        print(f"  b-roll '{c['q']}' falhou: {str(ex)[:120]}", flush=True)
+                        tried.add(c.get("link"))
+                        alt = next((x for x in c.get("cands", []) if x["link"] not in tried), None)
+                        if alt:
+                            c.update(link=alt["link"], vdur=alt["vdur"], chosen=alt["q"], w=alt["w"])
+                        else:
+                            c["link"] = None
+                            if not fill_from_neighbor(i) or c["link"] in tried:
+                                break
+                if clip is None:
+                    raise RuntimeError(f"b-roll do trecho {c['t']:.1f}s indisponível — vídeo adiado")
+                tops.append(clip)
             print(f"  {c['t']:5.1f}s  {c.get('chosen', c['q'])}  ({c.get('w', '-')}px)", flush=True)
         top = os.path.join(tmp, "top.mp4")
         with open(os.path.join(tmp, "t.txt"), "w") as f:
